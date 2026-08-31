@@ -1,0 +1,14 @@
+# Dependencies
+node_modules/
+
+# Environment / secrets
+.env
+.env.local
+
+# Runtime data (contains OAuth tokens — never commit)
+data/
+
+# Logs & misc
+npm-debug.log*
+*.log
+.DS_Store
