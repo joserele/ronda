@@ -158,17 +158,21 @@ export async function getRecentlyPlayed(user, limit = 50) {
   return items;
 }
 
+// Spotify's 2026 Web API migration retired the endpoints this used to call:
+// POST /users/{id}/playlists and POST /playlists/{id}/tracks now answer 403
+// Forbidden. The replacements are POST /me/playlists and .../items.
 export async function createPlaylist(user, { name, description = '', isPublic = false }) {
-  return api(user, 'POST', `/users/${encodeURIComponent(user.spotifyId)}/playlists`, {
+  return api(user, 'POST', '/me/playlists', {
     name,
     description,
     public: isPublic,
   });
 }
 
+/** Appends in batches: the API takes at most 100 URIs per request. */
 export async function addTracksToPlaylist(user, playlistId, uris) {
   for (let i = 0; i < uris.length; i += 100) {
-    await api(user, 'POST', `/playlists/${encodeURIComponent(playlistId)}/tracks`, {
+    await api(user, 'POST', `/playlists/${encodeURIComponent(playlistId)}/items`, {
       uris: uris.slice(i, i + 100),
     });
   }
