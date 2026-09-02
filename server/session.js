@@ -2,6 +2,7 @@
 // No server-side session storage needed, no extra dependencies.
 import crypto from 'node:crypto';
 import { config } from './config.js';
+import { publicOrigin, isSecureOrigin } from './origin.js';
 
 const SESSION_COOKIE = 'ronda_session';
 const SESSION_MAX_AGE_S = 60 * 60 * 24 * 30; // 30 days
@@ -40,9 +41,10 @@ export function parseCookies(header = '') {
   return out;
 }
 
-export function setCookie(res, name, value, maxAgeSeconds) {
+export function setCookie(req, res, name, value, maxAgeSeconds) {
   const parts = [`${name}=${value}`, 'Path=/', 'HttpOnly', 'SameSite=Lax', `Max-Age=${maxAgeSeconds}`];
-  if (config.isSecure) parts.push('Secure');
+  // Secure cookies only over HTTPS — a Secure cookie is dropped on plain http.
+  if (isSecureOrigin(publicOrigin(req))) parts.push('Secure');
   const prev = res.getHeader('Set-Cookie');
   const existing = prev ? (Array.isArray(prev) ? prev : [prev]) : [];
   res.setHeader('Set-Cookie', [...existing, parts.join('; ')]);
@@ -60,11 +62,11 @@ export function readSession(req) {
   }
 }
 
-export function writeSession(res, data) {
+export function writeSession(req, res, data) {
   const value = Buffer.from(JSON.stringify(data)).toString('base64url');
-  setCookie(res, SESSION_COOKIE, sign(value), SESSION_MAX_AGE_S);
+  setCookie(req, res, SESSION_COOKIE, sign(value), SESSION_MAX_AGE_S);
 }
 
-export function clearSession(res) {
-  setCookie(res, SESSION_COOKIE, '', 0);
+export function clearSession(req, res) {
+  setCookie(req, res, SESSION_COOKIE, '', 0);
 }

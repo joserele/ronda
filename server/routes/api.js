@@ -16,7 +16,7 @@ apiRouter.use((req, res, next) => {
 
 function requireAuth(req, res, next) {
   if (!req.user) {
-    clearSession(res); // drop stale cookies pointing at users we no longer know
+    clearSession(req, res); // drop stale cookies pointing at users we no longer know
     return res.status(401).json({ error: 'auth_required', message: 'Log in with Spotify first.' });
   }
   next();

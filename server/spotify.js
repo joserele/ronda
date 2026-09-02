@@ -24,12 +24,12 @@ export class SpotifyError extends Error {
 
 // ---- OAuth ------------------------------------------------------------
 
-export function authorizeUrl(state) {
+export function authorizeUrl(state, redirectUri) {
   const params = new URLSearchParams({
     response_type: 'code',
     client_id: config.clientId,
     scope: SCOPES.join(' '),
-    redirect_uri: config.redirectUri,
+    redirect_uri: redirectUri,
     state,
     show_dialog: 'false',
   });
@@ -60,8 +60,9 @@ async function tokenRequest(params) {
   };
 }
 
-export const exchangeCode = (code) =>
-  tokenRequest({ grant_type: 'authorization_code', code, redirect_uri: config.redirectUri });
+// Spotify requires the same redirect_uri used to obtain the code.
+export const exchangeCode = (code, redirectUri) =>
+  tokenRequest({ grant_type: 'authorization_code', code, redirect_uri: redirectUri });
 
 export const refreshAccessToken = (refreshToken) =>
   tokenRequest({ grant_type: 'refresh_token', refresh_token: refreshToken });

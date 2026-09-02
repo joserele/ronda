@@ -60,10 +60,56 @@ invite link.
 | ----------------------- | -------- | ----------------------- | -------------------------------------------------- |
 | `SPOTIFY_CLIENT_ID`     | yes      | —                       | From your Spotify app                              |
 | `SPOTIFY_CLIENT_SECRET` | yes      | —                       | From your Spotify app                              |
-| `BASE_URL`              | no       | `http://127.0.0.1:3000` | Public URL; redirect URI is `$BASE_URL/auth/callback` |
+| `BASE_URL`              | no       | the request's own origin | Pins the public URL; leave unset to auto-detect (tunnel-friendly) |
 | `PORT`                  | no       | `3000`                  | Port to listen on                                  |
 | `SESSION_SECRET`        | no       | random per boot         | Signs session cookies; set it so logins survive restarts |
 | `DATA_DIR`              | no       | `data`                  | Where the JSON store lives (gitignored)            |
+
+## Letting friends in (tunnels & deploying)
+
+`http://127.0.0.1:3000` only exists on *your* machine — a friend opening that
+link hits their own computer, not yours. To let them join a ronda, the app needs
+a URL reachable from the internet.
+
+Adding each friend's Spotify account email under **User Management** in the
+Spotify dashboard is still required either way; that's a separate Spotify rule,
+not a networking one.
+
+Leave `BASE_URL` unset for all of this: Ronda reads each request's own origin,
+so the same server answers correctly on localhost and through a tunnel at the
+same time, with no restart needed when a tunnel URL changes.
+
+### Quick: a tunnel (for an evening of testing)
+
+With the app already running on port 3000, in a second terminal:
+
+```bash
+# no signup, URL changes on every restart
+cloudflared tunnel --url http://127.0.0.1:3000
+
+# or, with a free ngrok account (also a random URL — named domains are paid)
+ngrok http 3000
+```
+
+Copy the `https://…` URL it prints, then:
+
+1. Spotify dashboard → your app → **Edit Settings** → add a Redirect URI:
+   `https://<that-url>/auth/callback` (keep the `127.0.0.1` one for local work).
+2. Open the app at that HTTPS URL yourself and share invite links from there.
+
+The catch: the URL is random and dies with the tunnel, so you re-add the
+redirect URI every session. Fine for a test, tiresome as a habit.
+
+### Better: deploy it (a URL that stays put)
+
+Any Node host works — Render, Fly.io, Railway, a VPS. Set `SPOTIFY_CLIENT_ID`,
+`SPOTIFY_CLIENT_SECRET` and `SESSION_SECRET` in the host's environment, deploy,
+then register `https://<your-app-url>/auth/callback` in Spotify once and never
+touch it again.
+
+One caveat on free tiers: `data/store.json` lives on disk, and most free hosts
+wipe the filesystem on redeploy, which signs everyone out. Attach a persistent
+disk, or move the store to SQLite/Postgres when it starts to matter.
 
 ## Project layout
 
@@ -73,6 +119,7 @@ server/
   app.js         Express wiring, static files, error handling
   config.js      environment configuration
   session.js     HMAC-signed cookie sessions (no session DB)
+  origin.js      resolves the public URL per request (tunnel/proxy aware)
   store.js       file-backed store for users, rooms, playlist history
   spotify.js     OAuth + Spotify Web API client (auto token refresh, 429 retry)
   blend.js       the round-robin blending algorithm (pure, unit-tested)
@@ -100,6 +147,7 @@ each member's history and saving the playlist.
 
 ## Notes & limitations
 
+- **Friends need a publicly reachable URL** — see *Letting friends in* above.
 - **"Recently played" means the last ~50 completed plays.** Spotify updates the
   list shortly after a track finishes; the currently playing song may not show
   up yet.
