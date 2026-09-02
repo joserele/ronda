@@ -16,6 +16,12 @@ async function main() {
     toast(AUTH_ERROR_MESSAGES[authError] ?? `Spotify login failed (${authError}).`, 'error');
     history.replaceState({}, '', '/');
   }
+  // Set by the room page on its way out, since its own toast dies with the page.
+  const deleted = params.get('deleted');
+  if (deleted) {
+    toast(`“${deleted}” was deleted. Its Spotify playlists are untouched.`, 'success');
+    history.replaceState({}, '', '/');
+  }
 
   let me = null;
   try {

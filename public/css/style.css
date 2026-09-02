@@ -633,9 +633,31 @@ select:focus {
 }
 
 /* Reads as ordinary until you go for it — destructive, but not shouting. */
-.playlist-row .p-delete:hover {
+.btn-danger-ghost:hover {
   color: var(--danger);
   border-color: var(--danger);
+}
+
+.danger-zone {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  margin: 34px 0 60px;
+  padding: 16px 18px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-soft);
+}
+
+.danger-zone .dz-title {
+  font-weight: 600;
+}
+
+.danger-zone .dz-sub {
+  color: var(--muted);
+  font-size: 13.5px;
 }
 
 /* ---- Confirmation dialog --------------------------------------------- */

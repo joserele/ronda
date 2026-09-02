@@ -307,6 +307,24 @@ apiRouter.post('/api/rooms/:id/playlist', requireAuth, async (req, res, next) =>
   }
 });
 
+// Forget a whole ronda, history and all. Only whoever started it can; the
+// Spotify playlists its blends produced are left alone.
+apiRouter.delete('/api/rooms/:id', requireAuth, (req, res) => {
+  const room = store.getRoom(req.params.id);
+  if (!room) {
+    return res.status(404).json({ error: 'room_not_found', message: "This ronda doesn't exist." });
+  }
+  if (room.ownerUid !== req.user.uid) {
+    return res.status(403).json({
+      error: 'not_owner',
+      message: 'Only whoever started this ronda can delete it.',
+    });
+  }
+  store.deleteRoom(room.id);
+  clearRoomCache(room.id);
+  res.status(204).end();
+});
+
 // Forget a blend. Ronda only drops its own record — the playlist stays in the
 // Spotify library of whoever created it.
 apiRouter.delete('/api/rooms/:id/playlists/:playlistId', requireAuth, (req, res) => {

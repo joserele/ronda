@@ -172,6 +172,30 @@ function render() {
     el('section', { id: 'history', class: 'panel' })
   );
   renderHistory();
+
+  // --- Owner-only: delete the whole ronda ---
+  if (room.isOwner) {
+    root.append(
+      el(
+        'div',
+        { class: 'danger-zone' },
+        el(
+          'div',
+          {},
+          el('div', { class: 'dz-title', text: 'Delete this ronda' }),
+          el('div', {
+            class: 'dz-sub',
+            text: 'Removes it for everyone, along with its blend history. Spotify playlists are not affected.',
+          })
+        ),
+        el('button', {
+          class: 'btn btn-ghost btn-sm btn-danger-ghost',
+          text: 'Delete ronda',
+          onclick: onDeleteRoom,
+        })
+      )
+    );
+  }
 }
 
 function renderJoinPanel(root) {
@@ -455,7 +479,7 @@ function renderHistory() {
           }),
           playlist.canDelete
             ? el('button', {
-                class: 'btn btn-ghost btn-sm p-delete',
+                class: 'btn btn-ghost btn-sm btn-danger-ghost',
                 text: 'Delete',
                 title: "Remove from this ronda's history",
                 onclick: () => onDelete(playlist),
@@ -464,6 +488,30 @@ function renderHistory() {
         )
       )
     );
+  }
+}
+
+async function onDeleteRoom() {
+  const blendCount = (room.playlists ?? []).length;
+  const blends = blendCount === 1 ? '1 blend' : `${blendCount} blends`;
+  const members = room.memberCount === 1 ? '1 member' : `all ${room.memberCount} members`;
+  const confirmed = await confirmDialog({
+    title: `Delete “${room.name}”?`,
+    body:
+      `This deletes the ronda for ${members}, along with the ${blends} in its history ` +
+      "and the invite link. That can't be undone.",
+    note:
+      'No Spotify playlists are deleted. Every blend made here stays in the library of ' +
+      'whoever created it, and any link you already shared keeps working.',
+    confirmText: 'Delete ronda',
+  });
+  if (!confirmed) return;
+
+  try {
+    await api(`/api/rooms/${encodeURIComponent(roomId)}`, { method: 'DELETE' });
+    location.href = `/?deleted=${encodeURIComponent(room.name)}`;
+  } catch (err) {
+    toast(err.message, 'error');
   }
 }
 

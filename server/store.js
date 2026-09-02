@@ -108,6 +108,20 @@ export function joinRoom(roomId, uid) {
   return room;
 }
 
+/**
+ * Forgets a whole ronda and its blend history. The Spotify playlists those
+ * blends produced are untouched — they live in their creators' libraries.
+ *
+ * @returns {object|null} the removed room, or null if it was already gone
+ */
+export function deleteRoom(roomId) {
+  const room = state.rooms[roomId];
+  if (!room) return null;
+  delete state.rooms[roomId];
+  scheduleSave();
+  return room;
+}
+
 export function roomsForUser(uid) {
   return Object.values(state.rooms)
     .filter((r) => r.memberUids.includes(uid))
