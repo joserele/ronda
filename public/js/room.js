@@ -149,53 +149,23 @@ function render() {
   );
   renderMemberSkeletons();
 
-  // --- Generate panel ---
-  const dateLabel = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-  const genForm = el(
-    'form',
-    { id: 'gen-form', class: 'gen-form' },
-    el(
-      'select',
-      { id: 'gen-limit', 'aria-label': 'Playlist length' },
-      el('option', { value: '20', text: '20 tracks' }),
-      el('option', { value: '50', text: '50 tracks', selected: true }),
-      el('option', { value: '100', text: '100 tracks' })
-    ),
-    el('input', { id: 'gen-name', maxlength: '100', placeholder: `${room.name} · ${dateLabel}` }),
-    el('button', { class: 'btn btn-primary', type: 'submit', text: 'Blend on Spotify' })
-  );
-  genForm.addEventListener('submit', onGenerate);
-  root.append(
-    el(
-      'section',
-      { class: 'panel' },
-      el('h2', { text: 'Blend a playlist' }),
-      el('p', { id: 'gen-blurb', class: 'panel-sub', text: SOURCES[source].blurb }),
-      genForm,
-      el('div', { id: 'gen-result' })
-    )
-  );
-
-  // --- History ---
-  root.append(
-    el('div', { class: 'section-head' }, el('h2', { text: 'Past blends' })),
-    el('section', { id: 'history', class: 'panel' })
-  );
-  renderHistory();
+  // --- The ronda's one blend ---
+  root.append(el('section', { id: 'blend-panel', class: 'panel' }));
+  renderBlend();
 
   // --- The way out: owners delete the ronda, everyone else leaves it ---
   root.append(
     room.isOwner
       ? dangerZone({
           title: 'Delete this ronda',
-          sub: 'Removes it for everyone, along with its blend history. Spotify playlists are not affected.',
+          sub: 'Removes it for everyone. The Spotify playlist it made is not affected.',
           label: 'Delete ronda',
           className: 'btn btn-ghost btn-sm btn-danger-ghost',
           onclick: onDeleteRoom,
         })
       : dangerZone({
           title: 'Leave this ronda',
-          sub: 'Your listens stop going into new blends. You can rejoin any time with the invite link.',
+          sub: "Your listens stop going into this ronda's blend. You can rejoin any time with the invite link.",
           label: 'Leave ronda',
           className: 'btn btn-ghost btn-sm',
           onclick: onLeaveRoom,
@@ -400,133 +370,164 @@ function showReconnect() {
   );
 }
 
-async function onGenerate(event) {
+/** The panel is either an invitation to blend, or the blend itself. */
+function renderBlend() {
+  const panel = document.getElementById('blend-panel');
+  if (!panel) return;
+  panel.textContent = '';
+  panel.append(room.blend ? blendCard(room.blend) : blendForm());
+}
+
+function blendForm() {
+  const dateLabel = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  const form = el(
+    'form',
+    { class: 'gen-form' },
+    el(
+      'select',
+      { id: 'gen-limit', 'aria-label': 'Playlist length' },
+      el('option', { value: '20', text: '20 tracks' }),
+      el('option', { value: '50', text: '50 tracks', selected: true }),
+      el('option', { value: '100', text: '100 tracks' })
+    ),
+    el('input', { id: 'gen-name', maxlength: '100', placeholder: `${room.name} · ${dateLabel}` }),
+    el('button', { class: 'btn btn-primary', type: 'submit', text: 'Blend on Spotify' })
+  );
+  form.addEventListener('submit', onBlend);
+  return el(
+    'div',
+    {},
+    el('h2', { text: 'Blend a playlist' }),
+    el('p', { class: 'panel-sub', text: SOURCES[source].blurb }),
+    form
+  );
+}
+
+function blendCard(blend) {
+  const label = SOURCES[blend.source]?.label ?? 'Latest listens';
+  const freshness = blend.refreshedAt
+    ? `refreshed ${timeAgo(blend.refreshedAt)}${blend.refreshedBy ? ` by ${blend.refreshedBy}` : ''}`
+    : `blended ${timeAgo(blend.createdAt)} by ${blend.createdBy}`;
+
+  const box = el(
+    'div',
+    {},
+    el('h2', { text: "This ronda's playlist" }),
+    el('p', {
+      class: 'panel-sub',
+      text: 'One playlist that everyone keeps current — refreshing replaces its tracks instead of making another.',
+    }),
+    el('div', { class: 'blend-name', text: blend.name }),
+    el('div', { class: 'muted blend-meta', text: `${blend.trackCount} tracks · ${label} · ${freshness}` }),
+    el(
+      'div',
+      { class: 'chips' },
+      blend.contributions.map((c) => el('span', { class: 'chip', text: `${c.name} · ${c.count}` }))
+    )
+  );
+  if (blend.skippedMembers?.length) {
+    box.append(
+      el('div', {
+        class: 'muted',
+        style: 'font-size:13px;margin-top:10px',
+        text: `Not in the mix right now: ${blend.skippedMembers.join(', ')}`,
+      })
+    );
+  }
+  box.append(
+    el(
+      'div',
+      { class: 'blend-actions' },
+      el('a', {
+        class: 'btn btn-spotify',
+        href: blend.url,
+        target: '_blank',
+        rel: 'noopener',
+        text: 'Open Playlist',
+      }),
+      el('button', {
+        class: 'btn btn-ghost',
+        text: 'Refresh',
+        title: "Re-blend everyone's current listening into this playlist",
+        onclick: (event) => onRefreshBlend(event.target),
+      }),
+      blend.canRemove
+        ? el('button', {
+            class: 'btn btn-ghost btn-danger-ghost',
+            text: 'Remove',
+            title: 'Forget this playlist so the ronda can blend a new one',
+            onclick: () => onRemoveBlend(blend),
+          })
+        : null
+    )
+  );
+  return box;
+}
+
+async function onBlend(event) {
   event.preventDefault();
   const button = event.target.querySelector('button[type=submit]');
   button.disabled = true;
   button.textContent = 'Blending…';
   try {
-    const { playlist } = await api(`/api/rooms/${encodeURIComponent(roomId)}/playlist`, {
+    const { blend } = await api(`/api/rooms/${encodeURIComponent(roomId)}/blend`, {
       method: 'POST',
       body: {
         source,
-        limit: Number($('gen-limit').value),
-        name: $('gen-name').value.trim() || undefined,
+        limit: Number(document.getElementById('gen-limit').value),
+        name: document.getElementById('gen-name').value.trim() || undefined,
       },
     });
-    room.playlists = [playlist, ...(room.playlists ?? [])];
-    showGenResult(playlist);
-    renderHistory();
+    room.blend = blend;
+    renderBlend();
     toast('Playlist created on your Spotify 🎉', 'success');
   } catch (err) {
     toast(err.message, 'error');
     if (err.code === 'needs_reconnect') showReconnect();
-  } finally {
     button.disabled = false;
     button.textContent = 'Blend on Spotify';
   }
 }
 
-function showGenResult(playlist) {
-  const result = $('gen-result');
-  result.textContent = '';
-  const box = el(
-    'div',
-    { class: 'gen-result' },
-    el('div', { class: 'r-name', text: playlist.name }),
-    el('div', {
-      class: 'muted',
-      style: 'font-size:14px;margin:4px 0 2px',
-      text: `${playlist.trackCount} tracks · saved to your Spotify library`,
-    }),
-    el(
-      'div',
-      { class: 'chips' },
-      playlist.contributions.map((c) => el('span', { class: 'chip', text: `${c.name} · ${c.count}` }))
-    )
-  );
-  if (playlist.skippedMembers?.length) {
-    box.append(
-      el('div', {
-        class: 'muted',
-        style: 'font-size:13px;margin-top:10px',
-        text: `Skipped (no readable listens right now): ${playlist.skippedMembers.join(', ')}`,
-      })
-    );
+async function onRefreshBlend(button) {
+  button.disabled = true;
+  button.textContent = 'Refreshing…';
+  try {
+    const { blend } = await api(`/api/rooms/${encodeURIComponent(roomId)}/blend`, { method: 'POST' });
+    room.blend = blend;
+    renderBlend();
+    toast(`Playlist refreshed — ${blend.trackCount} tracks.`, 'success');
+  } catch (err) {
+    toast(err.message, 'error');
+    if (err.code === 'needs_reconnect') showReconnect();
+    button.disabled = false;
+    button.textContent = 'Refresh';
   }
-  // The point of the whole flow — same shape as "Blend on Spotify", Spotify green.
-  box.append(
-    el('a', {
-      class: 'btn btn-spotify r-open',
-      href: playlist.url,
-      target: '_blank',
-      rel: 'noopener',
-      text: 'Open Playlist',
-    })
-  );
-  result.append(box);
 }
 
-function renderHistory() {
-  const history = $('history');
-  if (!history) return;
-  history.textContent = '';
-  const playlists = room.playlists ?? [];
-  if (!playlists.length) {
-    history.append(
-      el('p', { class: 'muted', style: 'margin:0', text: 'Nothing yet — blend your first playlist above.' })
-    );
-    return;
+async function onRemoveBlend(blend) {
+  const confirmed = await confirmDialog({
+    title: 'Remove this playlist from the ronda?',
+    body: `Ronda forgets “${blend.name}”, and the next blend starts a new playlist.`,
+    note:
+      "The Spotify playlist itself is not deleted — it stays in its creator's library and any " +
+      'link you shared keeps working. Remove it there yourself if you want it gone.',
+    confirmText: 'Remove',
+  });
+  if (!confirmed) return;
+
+  try {
+    await api(`/api/rooms/${encodeURIComponent(roomId)}/blend`, { method: 'DELETE' });
+    room.blend = null;
+    renderBlend();
+    toast('Removed — blend again whenever you like.', 'success');
+  } catch (err) {
+    toast(err.message, 'error');
   }
-  for (const playlist of playlists) {
-    history.append(
-      el(
-        'div',
-        { class: 'playlist-row' },
-        el(
-          'div',
-          {},
-          el('div', { class: 'p-name', text: playlist.name }),
-          el('div', {
-            class: 'p-meta',
-            text:
-              `${playlist.trackCount} tracks · ${SOURCES[playlist.source]?.label ?? 'Latest listens'}` +
-              ` · by ${playlist.createdBy} · ` +
-              (playlist.refreshedAt
-                ? `refreshed ${timeAgo(playlist.refreshedAt)}`
-                : timeAgo(playlist.createdAt)),
-          })
-        ),
-        el(
-          'div',
-          { class: 'p-actions' },
-          el('a', {
-            class: 'btn btn-ghost btn-sm',
-            href: playlist.url,
-            target: '_blank',
-            rel: 'noopener',
-            text: 'Open ↗',
-          }),
-          playlist.canRefresh
-            ? el('button', {
-                class: 'btn btn-ghost btn-sm',
-                text: 'Refresh',
-                title: 'Re-blend into this same playlist',
-                onclick: (event) => onRefresh(playlist, event.target),
-              })
-            : null,
-          playlist.canDelete
-            ? el('button', {
-                class: 'btn btn-ghost btn-sm btn-danger-ghost',
-                text: 'Delete',
-                title: "Remove from this ronda's history",
-                onclick: () => onDelete(playlist),
-              })
-            : null
-        )
-      )
-    );
-  }
+}
+
+function inviteUrl() {
+  return `${location.origin}/r/${encodeURIComponent(roomId)}?invite=${encodeURIComponent(room.invite ?? '')}`;
 }
 
 function dangerZone({ title, sub, label, className, onclick }) {
@@ -609,16 +610,15 @@ async function onLeaveRoom() {
 }
 
 async function onDeleteRoom() {
-  const blendCount = (room.playlists ?? []).length;
-  const blends = blendCount === 1 ? '1 blend' : `${blendCount} blends`;
   const members = room.memberCount === 1 ? '1 member' : `all ${room.memberCount} members`;
   const confirmed = await confirmDialog({
     title: `Delete “${room.name}”?`,
     body:
-      `This deletes the ronda for ${members}, along with the ${blends} in its history ` +
-      "and the invite link. That can't be undone.",
+      `This deletes the ronda for ${members}, along with its invite link` +
+      (room.blend ? ' and its playlist' : '') +
+      ". That can't be undone.",
     note:
-      'No Spotify playlists are deleted. Every blend made here stays in the library of ' +
+      'No Spotify playlist is deleted. The one this ronda made stays in the library of ' +
       'whoever created it, and any link you already shared keeps working.',
     confirmText: 'Delete ronda',
   });
@@ -630,66 +630,6 @@ async function onDeleteRoom() {
   } catch (err) {
     toast(err.message, 'error');
   }
-}
-
-async function onRefresh(playlist, button) {
-  const confirmed = await confirmDialog({
-    title: `Refresh “${playlist.name}”?`,
-    body:
-      "This re-blends everyone's current listening into this same playlist, replacing the " +
-      'tracks it holds now. The playlist keeps its link, so nothing new lands in your library.',
-    note:
-      'Anything you added or reordered inside Spotify is replaced too. To keep this one as it ' +
-      'is, blend a new playlist instead.',
-    confirmText: 'Refresh playlist',
-    danger: false,
-  });
-  if (!confirmed) return;
-
-  button.disabled = true;
-  button.textContent = 'Refreshing…';
-  try {
-    const { playlist: updated } = await api(
-      `/api/rooms/${encodeURIComponent(roomId)}/playlists/${encodeURIComponent(playlist.id)}/refresh`,
-      { method: 'POST' }
-    );
-    room.playlists = (room.playlists ?? []).map((p) => (p.id === updated.id ? updated : p));
-    renderHistory();
-    toast(`“${updated.name}” now holds ${updated.trackCount} fresh tracks.`, 'success');
-  } catch (err) {
-    toast(err.message, 'error');
-    button.disabled = false;
-    button.textContent = 'Refresh';
-  }
-}
-
-async function onDelete(playlist) {
-  const confirmed = await confirmDialog({
-    title: 'Delete this blend?',
-    body: `“${playlist.name}” will be removed from this ronda's history for everyone. That can't be undone.`,
-    note:
-      'Your Spotify playlist is not touched — Ronda never deletes playlists from anyone\'s ' +
-      'library. It stays where it is, and anyone you shared the link with keeps it. ' +
-      'To get rid of it, delete it in Spotify yourself.',
-    confirmText: 'Delete blend',
-  });
-  if (!confirmed) return;
-
-  try {
-    await api(
-      `/api/rooms/${encodeURIComponent(roomId)}/playlists/${encodeURIComponent(playlist.id)}`,
-      { method: 'DELETE' }
-    );
-    room.playlists = (room.playlists ?? []).filter((p) => p.id !== playlist.id);
-    renderHistory();
-    toast('Blend removed from this ronda — the Spotify playlist is untouched.', 'success');
-  } catch (err) {
-    toast(err.message, 'error');
-  }
-}
-
-function inviteUrl() {
-  return `${location.origin}/r/${encodeURIComponent(roomId)}?invite=${encodeURIComponent(room.invite ?? '')}`;
 }
 
 async function copyInvite() {

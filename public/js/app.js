@@ -53,7 +53,7 @@ function renderDashboard(me) {
 
   for (const room of me.rooms) {
     const members = `${room.memberCount} ${room.memberCount === 1 ? 'member' : 'members'}`;
-    const playlists = `${room.playlistCount} ${room.playlistCount === 1 ? 'playlist' : 'playlists'}`;
+    const playlists = room.hasBlend ? 'playlist ready' : 'not blended yet';
     grid.append(
       el(
         'a',

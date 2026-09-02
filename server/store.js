@@ -18,22 +18,54 @@ export async function initStore() {
     const parsed = JSON.parse(await fs.readFile(STORE_FILE, 'utf8'));
     state.users = parsed.users ?? {};
     state.rooms = parsed.rooms ?? {};
-    // Rooms created before invite codes existed get one now. Their old bare
-    // /r/<id> links stop working for new joiners — that's the point of codes.
-    let backfilled = 0;
-    for (const room of Object.values(state.rooms)) {
-      if (!room.inviteCode) {
-        room.inviteCode = newInviteCode();
-        backfilled += 1;
-      }
-    }
-    if (backfilled) {
-      console.log(`Issued invite codes for ${backfilled} existing ronda(s) — reshare their links.`);
-      scheduleSave();
-    }
+    migrate();
   } catch (err) {
     if (err.code !== 'ENOENT') console.warn(`Could not read ${STORE_FILE}: ${err.message}`);
   }
+}
+
+/**
+ * Brings a store written by an older Ronda up to the current shape. Each
+ * concern is counted on its own — a migration must never claim to have done
+ * something it didn't, since the invite message tells people to reshare links.
+ */
+function migrate() {
+  let issuedCodes = 0;
+  let collapsedBlends = 0;
+  let changed = false;
+
+  for (const room of Object.values(state.rooms)) {
+    // Rooms predating revocable invites: their bare /r/<id> links stop working
+    // for new joiners, which is the point of having a code at all.
+    if (!room.inviteCode) {
+      room.inviteCode = newInviteCode();
+      issuedCodes += 1;
+      changed = true;
+    }
+    // A ronda used to keep a list of blends and now keeps one. Take the most
+    // recent (they were stored newest-first) and forget the rest — the Spotify
+    // playlists are untouched, just no longer tracked here.
+    if (Array.isArray(room.playlists)) {
+      if (room.playlists.length && !room.blend) {
+        room.blend = room.playlists[0];
+        collapsedBlends += room.playlists.length - 1;
+      }
+      delete room.playlists;
+      changed = true;
+    }
+    if (room.blend === undefined) {
+      room.blend = null;
+      changed = true;
+    }
+  }
+
+  if (issuedCodes) {
+    console.log(`Issued invite codes for ${issuedCodes} ronda(s) — reshare their links.`);
+  }
+  if (collapsedBlends) {
+    console.log(`Collapsed ${collapsedBlends} older blend(s) — each ronda now keeps one.`);
+  }
+  if (changed) scheduleSave();
 }
 
 function scheduleSave() {
@@ -105,7 +137,7 @@ export function createRoom(name, ownerUid) {
     ownerUid,
     inviteCode: newInviteCode(),
     memberUids: [ownerUid],
-    playlists: [],
+    blend: null,
     createdAt: new Date().toISOString(),
   };
   state.rooms[id] = room;
@@ -180,36 +212,34 @@ export function roomsForUser(uid) {
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 
-export function addPlaylistToRoom(roomId, playlist) {
-  const room = state.rooms[roomId];
-  if (!room) return;
-  room.playlists.unshift(playlist);
-  scheduleSave();
-}
-
-/** Applies a patch to one blend's record — used when a blend is refreshed in place. */
-export function updatePlaylistInRoom(roomId, playlistId, patch) {
+/** Attaches the ronda's blend, replacing whatever it had. */
+export function setRoomBlend(roomId, blend) {
   const room = state.rooms[roomId];
   if (!room) return null;
-  const playlist = room.playlists.find((p) => p.id === playlistId);
-  if (!playlist) return null;
-  Object.assign(playlist, patch);
+  room.blend = blend;
   scheduleSave();
-  return playlist;
+  return blend;
+}
+
+/** Patches the ronda's blend in place — used when it's refreshed. */
+export function updateRoomBlend(roomId, patch) {
+  const room = state.rooms[roomId];
+  if (!room?.blend) return null;
+  Object.assign(room.blend, patch);
+  scheduleSave();
+  return room.blend;
 }
 
 /**
- * Forgets a blend. Only Ronda's own record goes — the playlist itself stays in
- * whoever created it's Spotify library.
- *
- * @returns {object|null} the removed record, or null if the room/blend is gone
+ * Detaches the blend so a new one can be made. Ronda forgets it; the Spotify
+ * playlist stays in the library of whoever created it.
  */
-export function removePlaylistFromRoom(roomId, playlistId) {
+export function clearRoomBlend(roomId) {
   const room = state.rooms[roomId];
-  if (!room) return null;
-  const i = room.playlists.findIndex((p) => p.id === playlistId);
-  if (i === -1) return null;
-  const [removed] = room.playlists.splice(i, 1);
+  if (!room?.blend) return null;
+  const previous = room.blend;
+  room.blend = null;
   scheduleSave();
-  return removed;
+  return previous;
 }
+

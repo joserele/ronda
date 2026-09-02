@@ -1,4 +1,3 @@
-import crypto from 'node:crypto';
 import { Router } from 'express';
 import { readSession, clearSession } from '../session.js';
 import * as store from '../store.js';
@@ -9,7 +8,6 @@ import {
   addTracksToPlaylist,
   replacePlaylistTracks,
   isMissingScope,
-  SpotifyError,
 } from '../spotify.js';
 import { blendTracks } from '../blend.js';
 
@@ -42,29 +40,29 @@ function presentMember(user, viewerUid) {
   };
 }
 
-function presentPlaylist(playlist, viewerUid, room) {
+function presentBlend(blend, viewerUid, room) {
+  if (!blend) return null;
   const nameOf = (uid) => store.getUser(uid)?.displayName ?? 'Someone';
   return {
-    id: playlist.id,
-    name: playlist.name,
-    url: playlist.url,
-    trackCount: playlist.trackCount,
-    createdAt: playlist.createdAt,
+    name: blend.name,
+    url: blend.url,
+    trackCount: blend.trackCount,
     // Blends made before the source picker existed were all recently-played.
-    source: playlist.source ?? 'recent',
-    createdBy: nameOf(playlist.createdByUid),
-    refreshedAt: playlist.refreshedAt ?? null,
-    // Refreshing writes to the creator's Spotify library, so only they can.
-    canRefresh: Boolean(viewerUid && viewerUid === playlist.createdByUid),
-    // You can forget your own blends; whoever started the ronda can tidy up any.
-    canDelete: Boolean(
-      viewerUid && (viewerUid === playlist.createdByUid || viewerUid === room?.ownerUid)
-    ),
-    contributions: Object.entries(playlist.contributions ?? {}).map(([uid, count]) => ({
+    source: blend.source ?? 'recent',
+    createdAt: blend.createdAt,
+    createdBy: nameOf(blend.createdByUid),
+    refreshedAt: blend.refreshedAt ?? null,
+    refreshedBy: blend.refreshedByUid ? nameOf(blend.refreshedByUid) : null,
+    contributions: Object.entries(blend.contributions ?? {}).map(([uid, count]) => ({
       name: nameOf(uid),
       count,
     })),
-    skippedMembers: playlist.skippedMembers ?? [],
+    skippedMembers: blend.skippedMembers ?? [],
+    // Anyone in the ronda keeps it current; only its creator or the ronda's
+    // owner can detach it and start over.
+    canRemove: Boolean(
+      viewerUid && (viewerUid === blend.createdByUid || viewerUid === room?.ownerUid)
+    ),
   };
 }
 
@@ -86,7 +84,7 @@ function presentRoom(room, viewerUid) {
   // History and the invite code are for members only — the code is the thing
   // that lets someone in, so it must never reach a non-member.
   if (isMember) {
-    out.playlists = room.playlists.map((p) => presentPlaylist(p, viewerUid, room));
+    out.blend = presentBlend(room.blend, viewerUid, room);
     out.invite = room.inviteCode;
   }
   return out;
@@ -165,7 +163,7 @@ apiRouter.get('/api/me', requireAuth, (req, res) => {
     id: room.id,
     name: room.name,
     memberCount: room.memberUids.length,
-    playlistCount: room.playlists.length,
+    hasBlend: Boolean(room.blend),
     createdAt: room.createdAt,
   }));
   res.json({ user: presentMember(req.user, req.user.uid), rooms });
@@ -307,47 +305,98 @@ async function buildBlend(room, source, limit) {
   };
 }
 
-apiRouter.post('/api/rooms/:id/playlist', requireAuth, async (req, res, next) => {
+/**
+ * Creates the ronda's blend, or refreshes it in place if it already has one.
+ * One button, one playlist — no history to manage and nothing new landing in
+ * anyone's library on a second press.
+ *
+ * Refreshing re-runs the blend's stored recipe (source + length), so the result
+ * never depends on whichever preview the presser happened to be looking at.
+ */
+apiRouter.post('/api/rooms/:id/blend', requireAuth, async (req, res, next) => {
   try {
     const room = requireMembership(req, res);
     if (!room) return;
+    const existing = room.blend;
 
-    const limit = clampLimit(req.body?.limit);
-    const customName = typeof req.body?.name === 'string' ? req.body.name.trim().slice(0, 100) : '';
-    const source = sourceFrom(req.body?.source);
+    // The blend lives in its creator's library, and it's their token that can
+    // rewrite it — so a refresh acts as them, whoever pressed the button.
+    const owner = existing ? store.getUser(existing.createdByUid) : req.user;
+    if (existing && !owner) {
+      return res.status(409).json({
+        error: 'creator_gone',
+        message:
+          "This blend's creator is no longer connected to Ronda. Remove it and blend a new one.",
+      });
+    }
+
+    const source = existing ? sourceFrom(existing.source) : sourceFrom(req.body?.source);
+    const limit = existing ? clampLimit(existing.limit ?? existing.trackCount) : clampLimit(req.body?.limit);
 
     const built = await buildBlend(room, source, limit);
     if (built.failure) return res.status(409).json(built.failure);
     const { blended, contributions, skipped, contributors } = built;
-
-    const dateLabel = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-    const name = customName || `${room.name} · ${dateLabel}`;
+    const uris = blended.map((t) => t.uri);
     const description = SOURCES[source].describe(contributors).slice(0, 250);
 
-    const playlist = await createPlaylist(req.user, { name, description, isPublic: false });
-    await addTracksToPlaylist(req.user, playlist.id, blended.map((t) => t.uri));
+    if (existing) {
+      await replacePlaylistTracks(owner, existing.spotifyId, uris);
+      const updated = store.updateRoomBlend(room.id, {
+        trackCount: blended.length,
+        contributions,
+        skippedMembers: skipped,
+        refreshedAt: new Date().toISOString(),
+        refreshedByUid: req.user.uid,
+      });
+      return res.json({ blend: presentBlend(updated, req.user.uid, room) });
+    }
 
-    const record = {
-      id: crypto.randomUUID(),
+    const dateLabel = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    const customName = typeof req.body?.name === 'string' ? req.body.name.trim().slice(0, 100) : '';
+    const name = customName || `${room.name} · ${dateLabel}`;
+    const playlist = await createPlaylist(req.user, { name, description, isPublic: false });
+    await addTracksToPlaylist(req.user, playlist.id, uris);
+
+    const blend = store.setRoomBlend(room.id, {
       spotifyId: playlist.id,
       name,
       url: playlist.external_urls?.spotify ?? `https://open.spotify.com/playlist/${playlist.id}`,
       trackCount: blended.length,
+      source,
       limit,
       createdAt: new Date().toISOString(),
       createdByUid: req.user.uid,
-      source,
+      refreshedAt: null,
+      refreshedByUid: null,
       contributions,
       skippedMembers: skipped,
-    };
-    store.addPlaylistToRoom(room.id, record);
-    res.status(201).json({ playlist: presentPlaylist(record, req.user.uid, room) });
+    });
+    res.status(201).json({ blend: presentBlend(blend, req.user.uid, room) });
   } catch (err) {
     next(err);
   }
 });
 
-// Remove someone else. Owner only, and never yourself — the owner's exit is
+// Detach the blend so the ronda can start a fresh one. Ronda forgets it; the
+// Spotify playlist stays in the library of whoever created it.
+apiRouter.delete('/api/rooms/:id/blend', requireAuth, (req, res) => {
+  const room = requireMembership(req, res);
+  if (!room) return;
+  if (!room.blend) {
+    return res.status(404).json({ error: 'no_blend', message: "This ronda hasn't been blended yet." });
+  }
+  if (room.blend.createdByUid !== req.user.uid && room.ownerUid !== req.user.uid) {
+    return res.status(403).json({
+      error: 'not_yours',
+      message:
+        'Only the person who made this blend (or whoever started the ronda) can remove it.',
+    });
+  }
+  store.clearRoomBlend(room.id);
+  res.status(204).end();
+});
+
+// Remove someone else. Owner only// Remove someone else. Owner only, and never yourself — the owner's exit is
 // deleting the ronda, which is a different and more deliberate decision.
 apiRouter.delete('/api/rooms/:id/members/:uid', requireAuth, (req, res) => {
   const room = store.getRoom(req.params.id);
@@ -426,74 +475,3 @@ apiRouter.delete('/api/rooms/:id', requireAuth, (req, res) => {
   res.status(204).end();
 });
 
-// Re-blend into an existing playlist instead of making another one: same
-// playlist id, URL and followers, new contents. Only the creator can, because
-// the playlist sits in their library and it's their token that rewrites it.
-apiRouter.post('/api/rooms/:id/playlists/:playlistId/refresh', requireAuth, async (req, res, next) => {
-  try {
-    const room = requireMembership(req, res);
-    if (!room) return;
-
-    const record = room.playlists.find((p) => p.id === req.params.playlistId);
-    if (!record) {
-      return res.status(404).json({ error: 'playlist_not_found', message: 'That blend is gone.' });
-    }
-    if (record.createdByUid !== req.user.uid) {
-      return res.status(403).json({
-        error: 'not_yours',
-        message:
-          "This playlist lives in someone else's Spotify library — only they can refresh it.",
-      });
-    }
-
-    const source = sourceFrom(record.source);
-    const built = await buildBlend(room, source, clampLimit(record.limit ?? record.trackCount));
-    if (built.failure) return res.status(409).json(built.failure);
-    const { blended, contributions, skipped, contributors } = built;
-
-    try {
-      await replacePlaylistTracks(req.user, record.spotifyId, blended.map((t) => t.uri));
-    } catch (err) {
-      // Deleting the playlist in Spotify leaves our record pointing at nothing.
-      if (err instanceof SpotifyError && err.status === 404) {
-        return res.status(409).json({
-          error: 'playlist_gone',
-          message:
-            "That playlist no longer exists on Spotify — blend a new one, and delete this row when you're ready.",
-        });
-      }
-      throw err;
-    }
-
-    const updated = store.updatePlaylistInRoom(room.id, record.id, {
-      trackCount: blended.length,
-      contributions,
-      skippedMembers: skipped,
-      refreshedAt: new Date().toISOString(),
-      contributors,
-    });
-    res.json({ playlist: presentPlaylist(updated, req.user.uid, room) });
-  } catch (err) {
-    next(err);
-  }
-});
-
-// Forget a blend. Ronda only drops its own record — the playlist stays in the
-// Spotify library of whoever created it.
-apiRouter.delete('/api/rooms/:id/playlists/:playlistId', requireAuth, (req, res) => {
-  const room = requireMembership(req, res);
-  if (!room) return;
-
-  const playlist = room.playlists.find((p) => p.id === req.params.playlistId);
-  if (!playlist) {
-    return res.status(404).json({ error: 'playlist_not_found', message: 'That blend is already gone.' });
-  }
-  if (playlist.createdByUid !== req.user.uid && room.ownerUid !== req.user.uid) {
-    return res.status(403).json({
-      error: 'not_yours',
-      message: 'Only the person who made this blend (or whoever started the ronda) can remove it.',
-    });
-  }
-  store.removePlaylistFromRoom(room.id, playlist.id);
-  res.status(204).end();
-});

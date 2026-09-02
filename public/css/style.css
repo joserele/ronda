@@ -570,21 +570,22 @@ select:focus {
   flex: 1 1 220px;
 }
 
-.gen-result {
-  margin-top: 18px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: var(--bg-soft);
-  padding: 16px 18px;
-}
-
-.gen-result .r-name {
+.blend-name {
   font-weight: 700;
-  font-size: 17px;
+  font-size: 19px;
+  margin-top: 4px;
 }
 
-.gen-result .r-open {
-  margin-top: 16px;
+.blend-meta {
+  font-size: 14px;
+  margin: 4px 0 12px;
+}
+
+.blend-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 18px;
 }
 
 .chips {
@@ -601,35 +602,6 @@ select:focus {
   padding: 3px 11px;
   font-size: 12.5px;
   color: var(--muted);
-}
-
-.playlist-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 14px;
-  padding: 13px 0;
-  border-bottom: 1px solid var(--border);
-}
-
-.playlist-row:last-child {
-  border-bottom: none;
-}
-
-.playlist-row .p-name {
-  font-weight: 600;
-}
-
-.playlist-row .p-meta {
-  font-size: 13px;
-  color: var(--muted);
-}
-
-.playlist-row .p-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex: none;
 }
 
 /* Reads as ordinary until you go for it — destructive, but not shouting. */
@@ -841,11 +813,5 @@ select:focus {
 @media (max-width: 560px) {
   .create-form {
     flex-direction: column;
-  }
-
-  .playlist-row {
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 6px;
   }
 }
