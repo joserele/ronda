@@ -383,12 +383,11 @@ function showGenResult(playlist) {
     'div',
     { class: 'gen-result' },
     el('div', { class: 'r-name', text: playlist.name }),
-    el(
-      'div',
-      { class: 'muted', style: 'font-size:14px;margin:4px 0 2px' },
-      `${playlist.trackCount} tracks · saved to your Spotify library · `,
-      el('a', { href: playlist.url, target: '_blank', rel: 'noopener', text: 'Open in Spotify ↗' })
-    ),
+    el('div', {
+      class: 'muted',
+      style: 'font-size:14px;margin:4px 0 2px',
+      text: `${playlist.trackCount} tracks · saved to your Spotify library`,
+    }),
     el(
       'div',
       { class: 'chips' },
@@ -404,6 +403,16 @@ function showGenResult(playlist) {
       })
     );
   }
+  // The point of the whole flow — same shape as "Blend on Spotify", Spotify green.
+  box.append(
+    el('a', {
+      class: 'btn btn-spotify r-open',
+      href: playlist.url,
+      target: '_blank',
+      rel: 'noopener',
+      text: 'Open Playlist',
+    })
+  );
   result.append(box);
 }
 

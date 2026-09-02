@@ -578,6 +578,10 @@ select:focus {
   font-size: 17px;
 }
 
+.gen-result .r-open {
+  margin-top: 16px;
+}
+
 .chips {
   display: flex;
   flex-wrap: wrap;
