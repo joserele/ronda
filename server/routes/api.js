@@ -78,8 +78,12 @@ function presentRoom(room, viewerUid) {
     isMember,
     isOwner: viewerUid === room.ownerUid,
   };
-  // Playlist history is for members only.
-  if (isMember) out.playlists = room.playlists.map((p) => presentPlaylist(p, viewerUid, room));
+  // History and the invite code are for members only — the code is the thing
+  // that lets someone in, so it must never reach a non-member.
+  if (isMember) {
+    out.playlists = room.playlists.map((p) => presentPlaylist(p, viewerUid, room));
+    out.invite = room.inviteCode;
+  }
   return out;
 }
 
@@ -185,6 +189,13 @@ apiRouter.post('/api/rooms/:id/join', requireAuth, (req, res) => {
   const room = store.getRoom(req.params.id);
   if (!room) {
     return res.status(404).json({ error: 'room_not_found', message: "This ronda doesn't exist." });
+  }
+  // Members can re-hit this harmlessly; newcomers need the current invite.
+  if (!room.memberUids.includes(req.user.uid) && !store.inviteMatches(room, req.body?.invite)) {
+    return res.status(403).json({
+      error: 'bad_invite',
+      message: 'This invite link is no longer valid — ask someone in the ronda for a fresh one.',
+    });
   }
   store.joinRoom(room.id, req.user.uid);
   clearRoomCache(room.id);
@@ -307,6 +318,50 @@ apiRouter.post('/api/rooms/:id/playlist', requireAuth, async (req, res, next) =>
   }
 });
 
+// Remove someone else. Owner only, and never yourself — the owner's exit is
+// deleting the ronda, which is a different and more deliberate decision.
+apiRouter.delete('/api/rooms/:id/members/:uid', requireAuth, (req, res) => {
+  const room = store.getRoom(req.params.id);
+  if (!room) {
+    return res.status(404).json({ error: 'room_not_found', message: "This ronda doesn't exist." });
+  }
+  if (room.ownerUid !== req.user.uid) {
+    return res.status(403).json({
+      error: 'not_owner',
+      message: 'Only whoever started this ronda can remove people from it.',
+    });
+  }
+  if (req.params.uid === req.user.uid) {
+    return res.status(409).json({
+      error: 'cannot_remove_self',
+      message: "You started this ronda — delete it instead of removing yourself.",
+    });
+  }
+  if (!room.memberUids.includes(req.params.uid)) {
+    return res.status(404).json({ error: 'not_a_member', message: "They're not in this ronda." });
+  }
+  store.removeMember(room.id, req.params.uid);
+  clearRoomCache(room.id);
+  res.status(204).end();
+});
+
+// Retire every invite link handed out so far and mint a new one. Owner only.
+// Existing members are unaffected — their membership, not the link, is what
+// keeps them in.
+apiRouter.post('/api/rooms/:id/invite', requireAuth, (req, res) => {
+  const room = store.getRoom(req.params.id);
+  if (!room) {
+    return res.status(404).json({ error: 'room_not_found', message: "This ronda doesn't exist." });
+  }
+  if (room.ownerUid !== req.user.uid) {
+    return res.status(403).json({
+      error: 'not_owner',
+      message: 'Only whoever started this ronda can change its invite link.',
+    });
+  }
+  res.json({ invite: store.rotateInviteCode(room.id) });
+});
+
 // Step out of a ronda. The owner can't — deleting is their exit, and it needs
 // to be a deliberate, separate decision.
 apiRouter.post('/api/rooms/:id/leave', requireAuth, (req, res) => {
@@ -319,7 +374,7 @@ apiRouter.post('/api/rooms/:id/leave', requireAuth, (req, res) => {
       message: "You started this ronda, so you can't leave it — delete it instead.",
     });
   }
-  store.leaveRoom(room.id, req.user.uid);
+  store.removeMember(room.id, req.user.uid);
   clearRoomCache(room.id); // the member list changed
   res.status(204).end();
 });

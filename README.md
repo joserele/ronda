@@ -10,10 +10,13 @@ Spotify.
 ## How it works
 
 1. **Connect Spotify** — you log in via Spotify OAuth and start a ronda (a room).
-2. **Invite** — share the room link (`/r/<id>`). Each friend logs in with their
-   own Spotify account too. This is required by Spotify: an account's listening
-   history can only be read with that account's permission, so there's no way to
-   pull a friend's recent tracks without them connecting.
+2. **Invite** — share the invite link (`/r/<id>?invite=<code>`). Each friend logs
+   in with their own Spotify account too. This is required by Spotify: an
+   account's listening history can only be read with that account's permission,
+   so there's no way to pull a friend's recent tracks without them connecting.
+   The owner can issue a new code at any time (*New link*), which instantly
+   retires every link shared so far without affecting existing members, and can
+   remove someone from the ronda outright.
 3. **Blend** — any member hits *Blend on Spotify*. The server pulls each
    member's [recently played tracks](https://developer.spotify.com/documentation/web-api/reference/get-recently-played)
    (up to 50 per person), interleaves them round-robin so everyone contributes

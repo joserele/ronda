@@ -18,6 +18,19 @@ export async function initStore() {
     const parsed = JSON.parse(await fs.readFile(STORE_FILE, 'utf8'));
     state.users = parsed.users ?? {};
     state.rooms = parsed.rooms ?? {};
+    // Rooms created before invite codes existed get one now. Their old bare
+    // /r/<id> links stop working for new joiners — that's the point of codes.
+    let backfilled = 0;
+    for (const room of Object.values(state.rooms)) {
+      if (!room.inviteCode) {
+        room.inviteCode = newInviteCode();
+        backfilled += 1;
+      }
+    }
+    if (backfilled) {
+      console.log(`Issued invite codes for ${backfilled} existing ronda(s) — reshare their links.`);
+      scheduleSave();
+    }
   } catch (err) {
     if (err.code !== 'ENOENT') console.warn(`Could not read ${STORE_FILE}: ${err.message}`);
   }
@@ -39,6 +52,9 @@ async function save() {
 }
 
 const newRoomId = () => crypto.randomBytes(6).toString('base64url');
+// The joinable secret, separate from the room id so it can be rotated without
+// breaking the room's URL or existing members' bookmarks.
+const newInviteCode = () => crypto.randomBytes(12).toString('base64url');
 
 // ---- Users ------------------------------------------------------------
 
@@ -87,6 +103,7 @@ export function createRoom(name, ownerUid) {
     id,
     name,
     ownerUid,
+    inviteCode: newInviteCode(),
     memberUids: [ownerUid],
     playlists: [],
     createdAt: new Date().toISOString(),
@@ -108,14 +125,32 @@ export function joinRoom(roomId, uid) {
   return room;
 }
 
+/** Constant-time check that `code` is this room's current invite. */
+export function inviteMatches(room, code) {
+  if (!room?.inviteCode || typeof code !== 'string' || !code) return false;
+  const expected = Buffer.from(room.inviteCode);
+  const given = Buffer.from(code);
+  return expected.length === given.length && crypto.timingSafeEqual(expected, given);
+}
+
+/** Issues a fresh invite code, instantly retiring every link handed out so far. */
+export function rotateInviteCode(roomId) {
+  const room = state.rooms[roomId];
+  if (!room) return null;
+  room.inviteCode = newInviteCode();
+  scheduleSave();
+  return room.inviteCode;
+}
+
 /**
- * Drops a member from a ronda. Their past blends stay in its history —
+ * Drops a member from a ronda, whether they left or the owner removed them.
+ * Their past blends stay in its history —
  * they're still credited by uid, and the user record itself is untouched, so
  * they can rejoin with the invite link and pick up where they left off.
  *
  * @returns {object|null} the room, or null if it or the membership is gone
  */
-export function leaveRoom(roomId, uid) {
+export function removeMember(roomId, uid) {
   const room = state.rooms[roomId];
   if (!room) return null;
   const i = room.memberUids.indexOf(uid);

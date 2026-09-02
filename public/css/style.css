@@ -638,6 +638,11 @@ select:focus {
   border-color: var(--danger);
 }
 
+/* Sits at the right edge of the member card's header row. */
+.member-head .member-remove {
+  margin-left: auto;
+}
+
 .danger-zone {
   display: flex;
   flex-wrap: wrap;

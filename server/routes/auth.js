@@ -23,6 +23,7 @@ export const authRouter = Router();
  * Start the Spotify login.
  *   ?next=/some/path  → where to land afterwards (same-site paths only)
  *   ?join=<roomId>    → auto-join that room after logging in
+ *   ?invite=<code>    → the invite that authorises that join
  */
 authRouter.get('/auth/login', (req, res) => {
   if (!isConfigured()) {
@@ -30,10 +31,11 @@ authRouter.get('/auth/login', (req, res) => {
   }
   const nonce = crypto.randomBytes(16).toString('base64url');
   const join = typeof req.query.join === 'string' ? req.query.join.slice(0, 64) : '';
+  const invite = typeof req.query.invite === 'string' ? req.query.invite.slice(0, 64) : '';
   let next = typeof req.query.next === 'string' ? req.query.next : '';
   if (!/^\/(?!\/)/.test(next)) next = ''; // same-site relative paths only
 
-  const payload = Buffer.from(JSON.stringify({ n: nonce, join, next, t: Date.now() })).toString(
+  const payload = Buffer.from(JSON.stringify({ n: nonce, join, invite, next, t: Date.now() })).toString(
     'base64url'
   );
   setCookie(req, res, OAUTH_COOKIE, sign(nonce), 600);
@@ -75,14 +77,22 @@ authRouter.get('/auth/callback', async (req, res) => {
       avatarUrl: profile.images?.[0]?.url ?? null,
       tokens,
     });
-    clearCachesForUser(user.uid);
     writeSession(req, res, { uid: user.uid, iat: Date.now() });
 
     let dest = statePayload.next || '/';
-    if (statePayload.join && store.getRoom(statePayload.join)) {
-      store.joinRoom(statePayload.join, user.uid);
-      dest = `/r/${statePayload.join}`;
+    const room = statePayload.join ? store.getRoom(statePayload.join) : null;
+    if (room) {
+      // Only a valid invite gets them in; a stale one still lands them on the
+      // room page, which explains why they can't join.
+      if (room.memberUids.includes(user.uid) || store.inviteMatches(room, statePayload.invite)) {
+        store.joinRoom(room.id, user.uid);
+      }
+      const query = statePayload.invite
+        ? `?invite=${encodeURIComponent(statePayload.invite)}`
+        : '';
+      dest = `/r/${room.id}${query}`;
     }
+    clearCachesForUser(user.uid); // after any join, so the new room is included
     res.redirect(dest);
   } catch (err) {
     console.error('OAuth callback failed:', err);

@@ -21,7 +21,11 @@ const SOURCES = {
 const DEFAULT_SOURCE = 'top';
 
 const roomId = decodeURIComponent(location.pathname.split('/')[2] || '');
-const loginJoinHref = `/auth/login?join=${encodeURIComponent(roomId)}`;
+// The code that authorises a join, carried in the invite link.
+const inviteCode = new URLSearchParams(location.search).get('invite') ?? '';
+const loginJoinHref =
+  `/auth/login?join=${encodeURIComponent(roomId)}` +
+  (inviteCode ? `&invite=${encodeURIComponent(inviteCode)}` : '');
 const $ = (id) => document.getElementById(id);
 
 let me = null;
@@ -83,11 +87,17 @@ function render() {
         'div',
         { style: 'display:flex;gap:10px;align-items:center' },
         el('span', { class: 'avatar-stack' }, room.members.slice(0, 6).map((m) => avatar(m, 'avatar-sm'))),
-        el('button', {
-          class: 'btn btn-ghost btn-sm',
-          text: 'Copy invite link',
-          onclick: copyInvite,
-        })
+        room.isMember
+          ? el('button', { class: 'btn btn-ghost btn-sm', text: 'Copy invite link', onclick: copyInvite })
+          : null,
+        room.isOwner
+          ? el('button', {
+              class: 'btn btn-ghost btn-sm',
+              text: 'New link',
+              title: 'Retire the current invite link and issue a new one',
+              onclick: onRotateInvite,
+            })
+          : null
       )
     ),
     el('p', {
@@ -203,6 +213,17 @@ function renderJoinPanel(root) {
         'Ronda only reads your recently played and most-played tracks.',
     })
   );
+  if (!inviteCode) {
+    // Without a code the join can only fail — say why instead of offering a button.
+    panel.append(
+      el('p', {
+        class: 'muted',
+        text: 'You need an invite link to join this ronda. Ask someone already in it to send you a fresh one.',
+      })
+    );
+    root.append(panel);
+    return;
+  }
   if (!me) {
     panel.append(el('a', { class: 'btn btn-spotify btn-lg', href: loginJoinHref, text: 'Join with Spotify' }));
   } else {
@@ -213,7 +234,10 @@ function renderJoinPanel(root) {
         onclick: async (event) => {
           event.target.disabled = true;
           try {
-            ({ room } = await api(`/api/rooms/${encodeURIComponent(roomId)}/join`, { method: 'POST' }));
+            ({ room } = await api(`/api/rooms/${encodeURIComponent(roomId)}/join`, {
+              method: 'POST',
+              body: { invite: inviteCode },
+            }));
             render();
             refreshTracks(false);
             toast(`You're in — welcome to ${room.name}!`, 'success');
@@ -253,7 +277,15 @@ function memberCard(member, tracks, note) {
       member.needsReconnect
         ? el('span', { class: 'badge badge-warn', text: 'needs reconnect' })
         : el('div', { class: 'sub', text: 'listening on Spotify' })
-    )
+    ),
+    room.isOwner && !member.isYou
+      ? el('button', {
+          class: 'btn btn-ghost btn-sm btn-danger-ghost member-remove',
+          text: 'Remove',
+          title: `Remove ${member.name} from this ronda`,
+          onclick: () => onRemoveMember(member),
+        })
+      : null
   );
   const card = el('div', { class: 'member-card' }, head);
 
@@ -495,6 +527,55 @@ function dangerZone({ title, sub, label, className, onclick }) {
   );
 }
 
+async function onRemoveMember(member) {
+  const confirmed = await confirmDialog({
+    title: `Remove ${member.name}?`,
+    body: `${member.name} loses access to this ronda and their listens stop going into new blends.`,
+    note:
+      "The blends they're already part of keep crediting them, and nothing changes on Spotify. " +
+      'They can rejoin if they still have a working invite link — press “New link” to retire it.',
+    confirmText: 'Remove',
+  });
+  if (!confirmed) return;
+
+  try {
+    await api(
+      `/api/rooms/${encodeURIComponent(roomId)}/members/${encodeURIComponent(member.uid)}`,
+      { method: 'DELETE' }
+    );
+    ({ room } = await api(`/api/rooms/${encodeURIComponent(roomId)}`));
+    render();
+    refreshTracks(true);
+    toast(`${member.name} was removed from this ronda.`, 'success');
+  } catch (err) {
+    toast(err.message, 'error');
+  }
+}
+
+async function onRotateInvite() {
+  const confirmed = await confirmDialog({
+    title: 'Issue a new invite link?',
+    body:
+      'The current link stops working immediately, so anyone still holding it can no longer join.',
+    note:
+      "Everyone already in this ronda stays in — membership is what keeps them here, not the link. " +
+      "You'll get the new link on your clipboard.",
+    confirmText: 'New link',
+    danger: false,
+  });
+  if (!confirmed) return;
+
+  try {
+    const { invite } = await api(`/api/rooms/${encodeURIComponent(roomId)}/invite`, {
+      method: 'POST',
+    });
+    room.invite = invite;
+    await copyInvite();
+  } catch (err) {
+    toast(err.message, 'error');
+  }
+}
+
 async function onLeaveRoom() {
   const confirmed = await confirmDialog({
     title: `Leave “${room.name}”?`,
@@ -565,8 +646,12 @@ async function onDelete(playlist) {
   }
 }
 
+function inviteUrl() {
+  return `${location.origin}/r/${encodeURIComponent(roomId)}?invite=${encodeURIComponent(room.invite ?? '')}`;
+}
+
 async function copyInvite() {
-  const url = `${location.origin}/r/${encodeURIComponent(roomId)}`;
+  const url = inviteUrl();
   try {
     await navigator.clipboard.writeText(url);
     toast('Invite link copied — send it to your friends!', 'success');
