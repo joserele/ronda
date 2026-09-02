@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import { Router } from 'express';
-import { config, isConfigured } from '../config.js';
+import { isConfigured } from '../config.js';
+import { redirectUriFor } from '../origin.js';
 import {
   sign,
   unsign,
@@ -24,7 +25,7 @@ export const authRouter = Router();
  */
 authRouter.get('/auth/login', (req, res) => {
   if (!isConfigured()) {
-    return res.status(503).send(SETUP_HELP_HTML);
+    return res.status(503).send(setupHelpHtml(redirectUriFor(req)));
   }
   const nonce = crypto.randomBytes(16).toString('base64url');
   const join = typeof req.query.join === 'string' ? req.query.join.slice(0, 64) : '';
@@ -34,13 +35,13 @@ authRouter.get('/auth/login', (req, res) => {
   const payload = Buffer.from(JSON.stringify({ n: nonce, join, next, t: Date.now() })).toString(
     'base64url'
   );
-  setCookie(res, OAUTH_COOKIE, sign(nonce), 600);
-  res.redirect(authorizeUrl(sign(payload)));
+  setCookie(req, res, OAUTH_COOKIE, sign(nonce), 600);
+  res.redirect(authorizeUrl(sign(payload), redirectUriFor(req)));
 });
 
 authRouter.get('/auth/callback', async (req, res) => {
   const cookies = parseCookies(req.headers.cookie);
-  setCookie(res, OAUTH_COOKIE, '', 0);
+  setCookie(req, res, OAUTH_COOKIE, '', 0);
 
   if (req.query.error) {
     return res.redirect(`/?auth_error=${encodeURIComponent(String(req.query.error))}`);
@@ -65,7 +66,7 @@ authRouter.get('/auth/callback', async (req, res) => {
   }
 
   try {
-    const tokens = await exchangeCode(req.query.code);
+    const tokens = await exchangeCode(req.query.code, redirectUriFor(req));
     const profile = await getProfile(tokens.accessToken);
     const user = store.upsertUser({
       spotifyId: profile.id,
@@ -73,7 +74,7 @@ authRouter.get('/auth/callback', async (req, res) => {
       avatarUrl: profile.images?.[0]?.url ?? null,
       tokens,
     });
-    writeSession(res, { uid: user.uid, iat: Date.now() });
+    writeSession(req, res, { uid: user.uid, iat: Date.now() });
 
     let dest = statePayload.next || '/';
     if (statePayload.join && store.getRoom(statePayload.join)) {
@@ -88,11 +89,11 @@ authRouter.get('/auth/callback', async (req, res) => {
 });
 
 authRouter.post('/auth/logout', (req, res) => {
-  clearSession(res);
+  clearSession(req, res);
   res.status(204).end();
 });
 
-const SETUP_HELP_HTML = `<!doctype html>
+const setupHelpHtml = (redirectUri) => `<!doctype html>
 <meta charset="utf-8">
 <title>Ronda — setup needed</title>
 <body style="font-family:system-ui,sans-serif;background:#0d0f14;color:#eceef3;display:grid;place-items:center;min-height:100vh;margin:0">
@@ -102,6 +103,6 @@ const SETUP_HELP_HTML = `<!doctype html>
     fill in <code>SPOTIFY_CLIENT_ID</code> and <code>SPOTIFY_CLIENT_SECRET</code> from your
     <a style="color:#ff6f61" href="https://developer.spotify.com/dashboard">Spotify developer app</a>,
     then restart the server. The app's Redirect URI must be
-    <code>${config.redirectUri}</code>.</p>
+    <code>${redirectUri}</code>.</p>
     <p><a style="color:#ff6f61" href="/">&larr; Back to Ronda</a></p>
   </div>`;

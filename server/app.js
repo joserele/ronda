@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
-import { config } from './config.js';
+import { publicOrigin } from './origin.js';
 import { authRouter } from './routes/auth.js';
 import { apiRouter } from './routes/api.js';
 import { SpotifyError } from './spotify.js';
@@ -15,7 +15,7 @@ app.use(express.json());
 
 // Cookies are SameSite=Lax; this adds a same-origin check on top for writes.
 app.use((req, res, next) => {
-  if (req.method !== 'GET' && req.headers.origin && req.headers.origin !== config.baseUrl) {
+  if (req.method !== 'GET' && req.headers.origin && req.headers.origin !== publicOrigin(req)) {
     return res.status(403).json({ error: 'bad_origin' });
   }
   next();
