@@ -372,7 +372,9 @@ select:focus {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 24px;
-  margin-bottom: 24px;
+  /* Top margin too, so a panel never butts against whatever precedes it.
+     Adjacent margins collapse, so this doesn't double up after .room-sub. */
+  margin: 24px 0;
 }
 
 .panel h2 {
