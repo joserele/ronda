@@ -173,29 +173,24 @@ function render() {
   );
   renderHistory();
 
-  // --- Owner-only: delete the whole ronda ---
-  if (room.isOwner) {
-    root.append(
-      el(
-        'div',
-        { class: 'danger-zone' },
-        el(
-          'div',
-          {},
-          el('div', { class: 'dz-title', text: 'Delete this ronda' }),
-          el('div', {
-            class: 'dz-sub',
-            text: 'Removes it for everyone, along with its blend history. Spotify playlists are not affected.',
-          })
-        ),
-        el('button', {
-          class: 'btn btn-ghost btn-sm btn-danger-ghost',
-          text: 'Delete ronda',
+  // --- The way out: owners delete the ronda, everyone else leaves it ---
+  root.append(
+    room.isOwner
+      ? dangerZone({
+          title: 'Delete this ronda',
+          sub: 'Removes it for everyone, along with its blend history. Spotify playlists are not affected.',
+          label: 'Delete ronda',
+          className: 'btn btn-ghost btn-sm btn-danger-ghost',
           onclick: onDeleteRoom,
         })
-      )
-    );
-  }
+      : dangerZone({
+          title: 'Leave this ronda',
+          sub: 'Your listens stop going into new blends. You can rejoin any time with the invite link.',
+          label: 'Leave ronda',
+          className: 'btn btn-ghost btn-sm',
+          onclick: onLeaveRoom,
+        })
+  );
 }
 
 function renderJoinPanel(root) {
@@ -488,6 +483,36 @@ function renderHistory() {
         )
       )
     );
+  }
+}
+
+function dangerZone({ title, sub, label, className, onclick }) {
+  return el(
+    'div',
+    { class: 'danger-zone' },
+    el('div', {}, el('div', { class: 'dz-title', text: title }), el('div', { class: 'dz-sub', text: sub })),
+    el('button', { class: className, text: label, onclick })
+  );
+}
+
+async function onLeaveRoom() {
+  const confirmed = await confirmDialog({
+    title: `Leave “${room.name}”?`,
+    body:
+      'Your listens stop going into new blends here, and this ronda disappears from your dashboard.',
+    note:
+      "The blends you already made stay in this ronda's history, and nothing changes on Spotify. " +
+      'You can rejoin any time with the invite link.',
+    confirmText: 'Leave ronda',
+    danger: false,
+  });
+  if (!confirmed) return;
+
+  try {
+    await api(`/api/rooms/${encodeURIComponent(roomId)}/leave`, { method: 'POST' });
+    location.href = `/?left=${encodeURIComponent(room.name)}`;
+  } catch (err) {
+    toast(err.message, 'error');
   }
 }
 

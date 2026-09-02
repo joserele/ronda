@@ -73,9 +73,19 @@ export function avatar(user, size = '') {
  * button — Escape, the Cancel button and a backdrop click all resolve false,
  * and Cancel takes focus so a stray Enter can never destroy anything.
  *
+ * Pass `danger: false` for a reversible action, so the confirm button doesn't
+ * cry wolf about something the user can simply undo.
+ *
  * @returns {Promise<boolean>}
  */
-export function confirmDialog({ title, body, note, confirmText = 'Delete', cancelText = 'Cancel' }) {
+export function confirmDialog({
+  title,
+  body,
+  note,
+  confirmText = 'Delete',
+  cancelText = 'Cancel',
+  danger = true,
+}) {
   return new Promise((resolve) => {
     const close = (answer) => {
       document.removeEventListener('keydown', onKey);
@@ -109,7 +119,11 @@ export function confirmDialog({ title, body, note, confirmText = 'Delete', cance
           'div',
           { class: 'modal-actions' },
           cancelButton,
-          el('button', { class: 'btn btn-danger', text: confirmText, onclick: () => close(true) })
+          el('button', {
+            class: `btn ${danger ? 'btn-danger' : 'btn-primary'}`,
+            text: confirmText,
+            onclick: () => close(true),
+          })
         )
       )
     );

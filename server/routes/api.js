@@ -307,6 +307,23 @@ apiRouter.post('/api/rooms/:id/playlist', requireAuth, async (req, res, next) =>
   }
 });
 
+// Step out of a ronda. The owner can't — deleting is their exit, and it needs
+// to be a deliberate, separate decision.
+apiRouter.post('/api/rooms/:id/leave', requireAuth, (req, res) => {
+  const room = requireMembership(req, res);
+  if (!room) return;
+
+  if (room.ownerUid === req.user.uid) {
+    return res.status(409).json({
+      error: 'owner_cannot_leave',
+      message: "You started this ronda, so you can't leave it — delete it instead.",
+    });
+  }
+  store.leaveRoom(room.id, req.user.uid);
+  clearRoomCache(room.id); // the member list changed
+  res.status(204).end();
+});
+
 // Forget a whole ronda, history and all. Only whoever started it can; the
 // Spotify playlists its blends produced are left alone.
 apiRouter.delete('/api/rooms/:id', requireAuth, (req, res) => {

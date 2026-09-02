@@ -109,6 +109,23 @@ export function joinRoom(roomId, uid) {
 }
 
 /**
+ * Drops a member from a ronda. Their past blends stay in its history —
+ * they're still credited by uid, and the user record itself is untouched, so
+ * they can rejoin with the invite link and pick up where they left off.
+ *
+ * @returns {object|null} the room, or null if it or the membership is gone
+ */
+export function leaveRoom(roomId, uid) {
+  const room = state.rooms[roomId];
+  if (!room) return null;
+  const i = room.memberUids.indexOf(uid);
+  if (i === -1) return null;
+  room.memberUids.splice(i, 1);
+  scheduleSave();
+  return room;
+}
+
+/**
  * Forgets a whole ronda and its blend history. The Spotify playlists those
  * blends produced are untouched — they live in their creators' libraries.
  *

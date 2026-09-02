@@ -22,6 +22,11 @@ async function main() {
     toast(`“${deleted}” was deleted. Its Spotify playlists are untouched.`, 'success');
     history.replaceState({}, '', '/');
   }
+  const left = params.get('left');
+  if (left) {
+    toast(`You left “${left}”. Rejoin any time with the invite link.`, 'success');
+    history.replaceState({}, '', '/');
+  }
 
   let me = null;
   try {
