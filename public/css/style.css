@@ -166,6 +166,11 @@ h3 {
   color: #06230f;
 }
 
+.btn-danger {
+  background: var(--danger);
+  color: #2b0910;
+}
+
 .btn-ghost {
   background: transparent;
   border-color: var(--border);
@@ -618,6 +623,68 @@ select:focus {
 .playlist-row .p-meta {
   font-size: 13px;
   color: var(--muted);
+}
+
+.playlist-row .p-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+}
+
+/* Reads as ordinary until you go for it — destructive, but not shouting. */
+.playlist-row .p-delete:hover {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+/* ---- Confirmation dialog --------------------------------------------- */
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(6, 8, 12, 0.72);
+}
+
+.modal {
+  width: min(460px, 100%);
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 24px 26px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
+}
+
+.modal h3 {
+  margin: 0 0 10px;
+  font-size: 19px;
+}
+
+.modal .modal-body {
+  margin: 0;
+  color: var(--text);
+  line-height: 1.6;
+}
+
+.modal .modal-note {
+  margin: 12px 0 0;
+  padding: 11px 13px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-soft);
+  color: var(--muted);
+  font-size: 13.5px;
+  line-height: 1.55;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 22px;
 }
 
 /* ---- Misc ------------------------------------------------------------ */

@@ -120,3 +120,19 @@ export function addPlaylistToRoom(roomId, playlist) {
   room.playlists.unshift(playlist);
   scheduleSave();
 }
+
+/**
+ * Forgets a blend. Only Ronda's own record goes — the playlist itself stays in
+ * whoever created it's Spotify library.
+ *
+ * @returns {object|null} the removed record, or null if the room/blend is gone
+ */
+export function removePlaylistFromRoom(roomId, playlistId) {
+  const room = state.rooms[roomId];
+  if (!room) return null;
+  const i = room.playlists.findIndex((p) => p.id === playlistId);
+  if (i === -1) return null;
+  const [removed] = room.playlists.splice(i, 1);
+  scheduleSave();
+  return removed;
+}

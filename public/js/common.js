@@ -68,6 +68,58 @@ export function avatar(user, size = '') {
     : el('div', { class: `${cls} avatar-fallback`, text: initials(user.name) });
 }
 
+/**
+ * A blocking yes/no the user has to read. Resolves true only on the confirm
+ * button — Escape, the Cancel button and a backdrop click all resolve false,
+ * and Cancel takes focus so a stray Enter can never destroy anything.
+ *
+ * @returns {Promise<boolean>}
+ */
+export function confirmDialog({ title, body, note, confirmText = 'Delete', cancelText = 'Cancel' }) {
+  return new Promise((resolve) => {
+    const close = (answer) => {
+      document.removeEventListener('keydown', onKey);
+      backdrop.remove();
+      resolve(answer);
+    };
+    const onKey = (event) => {
+      if (event.key === 'Escape') close(false);
+    };
+
+    const cancelButton = el('button', {
+      class: 'btn btn-ghost',
+      text: cancelText,
+      onclick: () => close(false),
+    });
+    const backdrop = el(
+      'div',
+      {
+        class: 'modal-backdrop',
+        onclick: (event) => {
+          if (event.target === backdrop) close(false);
+        },
+      },
+      el(
+        'div',
+        { class: 'modal', role: 'dialog', 'aria-modal': 'true' },
+        el('h3', { text: title }),
+        el('p', { class: 'modal-body', text: body }),
+        note ? el('p', { class: 'modal-note', text: note }) : null,
+        el(
+          'div',
+          { class: 'modal-actions' },
+          cancelButton,
+          el('button', { class: 'btn btn-danger', text: confirmText, onclick: () => close(true) })
+        )
+      )
+    );
+
+    document.addEventListener('keydown', onKey);
+    document.body.append(backdrop);
+    cancelButton.focus();
+  });
+}
+
 export function toast(message, kind = 'info') {
   let host = document.getElementById('toasts');
   if (!host) {

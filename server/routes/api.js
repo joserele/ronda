@@ -40,7 +40,7 @@ function presentMember(user, viewerUid) {
   };
 }
 
-function presentPlaylist(playlist) {
+function presentPlaylist(playlist, viewerUid, room) {
   const nameOf = (uid) => store.getUser(uid)?.displayName ?? 'Someone';
   return {
     id: playlist.id,
@@ -51,6 +51,10 @@ function presentPlaylist(playlist) {
     // Blends made before the source picker existed were all recently-played.
     source: playlist.source ?? 'recent',
     createdBy: nameOf(playlist.createdByUid),
+    // You can forget your own blends; whoever started the ronda can tidy up any.
+    canDelete: Boolean(
+      viewerUid && (viewerUid === playlist.createdByUid || viewerUid === room?.ownerUid)
+    ),
     contributions: Object.entries(playlist.contributions ?? {}).map(([uid, count]) => ({
       name: nameOf(uid),
       count,
@@ -75,7 +79,7 @@ function presentRoom(room, viewerUid) {
     isOwner: viewerUid === room.ownerUid,
   };
   // Playlist history is for members only.
-  if (isMember) out.playlists = room.playlists.map(presentPlaylist);
+  if (isMember) out.playlists = room.playlists.map((p) => presentPlaylist(p, viewerUid, room));
   return out;
 }
 
@@ -297,8 +301,28 @@ apiRouter.post('/api/rooms/:id/playlist', requireAuth, async (req, res, next) =>
       skippedMembers: skipped,
     };
     store.addPlaylistToRoom(room.id, record);
-    res.status(201).json({ playlist: presentPlaylist(record) });
+    res.status(201).json({ playlist: presentPlaylist(record, req.user.uid, room) });
   } catch (err) {
     next(err);
   }
+});
+
+// Forget a blend. Ronda only drops its own record — the playlist stays in the
+// Spotify library of whoever created it.
+apiRouter.delete('/api/rooms/:id/playlists/:playlistId', requireAuth, (req, res) => {
+  const room = requireMembership(req, res);
+  if (!room) return;
+
+  const playlist = room.playlists.find((p) => p.id === req.params.playlistId);
+  if (!playlist) {
+    return res.status(404).json({ error: 'playlist_not_found', message: 'That blend is already gone.' });
+  }
+  if (playlist.createdByUid !== req.user.uid && room.ownerUid !== req.user.uid) {
+    return res.status(403).json({
+      error: 'not_yours',
+      message: 'Only the person who made this blend (or whoever started the ronda) can remove it.',
+    });
+  }
+  store.removePlaylistFromRoom(room.id, playlist.id);
+  res.status(204).end();
 });

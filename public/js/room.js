@@ -1,5 +1,5 @@
 // Room ("ronda") page: members, what they're playing, and the blend button.
-import { api, el, timeAgo, toast, renderHeader, avatar } from './common.js';
+import { api, el, timeAgo, toast, renderHeader, avatar, confirmDialog } from './common.js';
 
 // Keep these keys in sync with SOURCES in server/routes/api.js.
 const SOURCES = {
@@ -443,15 +443,52 @@ function renderHistory() {
               ` · by ${playlist.createdBy} · ${timeAgo(playlist.createdAt)}`,
           })
         ),
-        el('a', {
-          class: 'btn btn-ghost btn-sm',
-          href: playlist.url,
-          target: '_blank',
-          rel: 'noopener',
-          text: 'Open ↗',
-        })
+        el(
+          'div',
+          { class: 'p-actions' },
+          el('a', {
+            class: 'btn btn-ghost btn-sm',
+            href: playlist.url,
+            target: '_blank',
+            rel: 'noopener',
+            text: 'Open ↗',
+          }),
+          playlist.canDelete
+            ? el('button', {
+                class: 'btn btn-ghost btn-sm p-delete',
+                text: 'Delete',
+                title: "Remove from this ronda's history",
+                onclick: () => onDelete(playlist),
+              })
+            : null
+        )
       )
     );
+  }
+}
+
+async function onDelete(playlist) {
+  const confirmed = await confirmDialog({
+    title: 'Delete this blend?',
+    body: `“${playlist.name}” will be removed from this ronda's history for everyone. That can't be undone.`,
+    note:
+      'Your Spotify playlist is not touched — Ronda never deletes playlists from anyone\'s ' +
+      'library. It stays where it is, and anyone you shared the link with keeps it. ' +
+      'To get rid of it, delete it in Spotify yourself.',
+    confirmText: 'Delete blend',
+  });
+  if (!confirmed) return;
+
+  try {
+    await api(
+      `/api/rooms/${encodeURIComponent(roomId)}/playlists/${encodeURIComponent(playlist.id)}`,
+      { method: 'DELETE' }
+    );
+    room.playlists = (room.playlists ?? []).filter((p) => p.id !== playlist.id);
+    renderHistory();
+    toast('Blend removed from this ronda — the Spotify playlist is untouched.', 'success');
+  } catch (err) {
+    toast(err.message, 'error');
   }
 }
 
