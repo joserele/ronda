@@ -1,12 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { blendRecent } from '../server/blend.js';
+import { blendTracks } from '../server/blend.js';
 
 const t = (uri) => ({ uri });
 const uris = (tracks) => tracks.map((x) => x.uri);
 
 test('interleaves members round-robin, newest first', () => {
-  const result = blendRecent([
+  const result = blendTracks([
     [t('a1'), t('a2')],
     [t('b1'), t('b2')],
   ]);
@@ -14,12 +14,12 @@ test('interleaves members round-robin, newest first', () => {
 });
 
 test('dedupes repeat plays within a single member', () => {
-  const result = blendRecent([[t('x'), t('x'), t('y'), t('x')]]);
+  const result = blendTracks([[t('x'), t('x'), t('y'), t('x')]]);
   assert.deepEqual(uris(result), ['x', 'y']);
 });
 
 test('dedupes the same track across members (first picker wins)', () => {
-  const result = blendRecent([
+  const result = blendTracks([
     [t('shared'), t('a2')],
     [t('shared'), t('b2')],
   ]);
@@ -27,7 +27,7 @@ test('dedupes the same track across members (first picker wins)', () => {
 });
 
 test('respects the limit', () => {
-  const result = blendRecent(
+  const result = blendTracks(
     [
       [t('a1'), t('a2'), t('a3')],
       [t('b1'), t('b2'), t('b3')],
@@ -38,16 +38,16 @@ test('respects the limit', () => {
 });
 
 test('drains longer lists once shorter members run out', () => {
-  const result = blendRecent([[t('a1')], [t('b1'), t('b2'), t('b3')]], { limit: 10 });
+  const result = blendTracks([[t('a1')], [t('b1'), t('b2'), t('b3')]], { limit: 10 });
   assert.deepEqual(uris(result), ['a1', 'b1', 'b2', 'b3']);
 });
 
 test('handles empty input', () => {
-  assert.deepEqual(blendRecent([]), []);
-  assert.deepEqual(blendRecent([[], []]), []);
+  assert.deepEqual(blendTracks([]), []);
+  assert.deepEqual(blendTracks([[], []]), []);
 });
 
 test('skips items without a uri and carries extra fields through', () => {
-  const result = blendRecent([[{ uri: 'a1', extra: 42 }, { name: 'no uri' }, null]]);
+  const result = blendTracks([[{ uri: 'a1', extra: 42 }, { name: 'no uri' }, null]]);
   assert.deepEqual(result, [{ uri: 'a1', extra: 42 }]);
 });

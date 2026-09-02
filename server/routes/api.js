@@ -2,8 +2,14 @@ import crypto from 'node:crypto';
 import { Router } from 'express';
 import { readSession, clearSession } from '../session.js';
 import * as store from '../store.js';
-import { getRecentlyPlayed, createPlaylist, addTracksToPlaylist } from '../spotify.js';
-import { blendRecent } from '../blend.js';
+import {
+  getRecentlyPlayed,
+  getTopTracks,
+  createPlaylist,
+  addTracksToPlaylist,
+  isMissingScope,
+} from '../spotify.js';
+import { blendTracks } from '../blend.js';
 
 export const apiRouter = Router();
 
@@ -42,6 +48,8 @@ function presentPlaylist(playlist) {
     url: playlist.url,
     trackCount: playlist.trackCount,
     createdAt: playlist.createdAt,
+    // Blends made before the source picker existed were all recently-played.
+    source: playlist.source ?? 'recent',
     createdBy: nameOf(playlist.createdByUid),
     contributions: Object.entries(playlist.contributions ?? {}).map(([uid, count]) => ({
       name: nameOf(uid),
@@ -71,29 +79,69 @@ function presentRoom(room, viewerUid) {
   return out;
 }
 
-// ---- Recently-played fetching (shared by preview + generate) ----------
+// ---- Track sources (shared by preview + generate) ---------------------
 
-const recentCache = new Map(); // roomId -> { at, byUid: { uid: { tracks, error } } }
-const RECENT_TTL_MS = 60_000;
+/**
+ * What a blend is made of. Each source returns one list per member, already
+ * ordered best-first — blendTracks() interleaves them without caring which.
+ */
+const SOURCES = {
+  top: {
+    heading: 'On repeat lately',
+    // Spotify's short_term ranking covers roughly the last four weeks.
+    fetch: (user) => getTopTracks(user, 50, 'short_term'),
+    describe: (names) => `The tracks ${names} have had on repeat lately. Blended with Ronda.`,
+  },
+  recent: {
+    heading: 'Latest listens',
+    fetch: (user) => getRecentlyPlayed(user, 50),
+    describe: (names) => `The latest listens of ${names}. Blended with Ronda.`,
+  },
+};
+const DEFAULT_SOURCE = 'top';
 
-async function fetchRecentForRoom(room, { fresh = false } = {}) {
-  const cached = recentCache.get(room.id);
-  if (!fresh && cached && Date.now() - cached.at < RECENT_TTL_MS) return cached;
+const sourceFrom = (value) =>
+  typeof value === 'string' && Object.hasOwn(SOURCES, value) ? value : DEFAULT_SOURCE;
+
+const trackCache = new Map(); // `${roomId}:${source}` -> { at, byUid: { uid: { tracks, error } } }
+const TRACKS_TTL_MS = 60_000;
+
+const clearRoomCache = (roomId) => {
+  for (const source of Object.keys(SOURCES)) trackCache.delete(`${roomId}:${source}`);
+};
+
+/**
+ * Drop a member's cached results after they log in again, so a grant they just
+ * gave isn't hidden behind a minute of cached "needs reconnect".
+ */
+export function clearCachesForUser(uid) {
+  for (const room of store.roomsForUser(uid)) clearRoomCache(room.id);
+}
+
+async function fetchTracksForRoom(room, source, { fresh = false } = {}) {
+  const key = `${room.id}:${source}`;
+  const cached = trackCache.get(key);
+  if (!fresh && cached && Date.now() - cached.at < TRACKS_TTL_MS) return cached;
 
   const members = room.memberUids.map(store.getUser).filter(Boolean);
-  const results = await Promise.allSettled(members.map((m) => getRecentlyPlayed(m, 50)));
+  const results = await Promise.allSettled(members.map((m) => SOURCES[source].fetch(m)));
   const byUid = {};
   members.forEach((member, i) => {
     const result = results[i];
     if (result.status === 'fulfilled') {
       byUid[member.uid] = { tracks: result.value };
     } else {
-      console.warn(`Recently-played fetch failed for ${member.displayName}:`, result.reason?.message);
-      byUid[member.uid] = { tracks: [], error: 'unavailable' };
+      console.warn(`${source} fetch failed for ${member.displayName}:`, result.reason?.message);
+      // A missing scope is fixable by the member alone — say so instead of
+      // lumping it in with transient Spotify failures.
+      byUid[member.uid] = {
+        tracks: [],
+        error: isMissingScope(result.reason) ? 'needs_reconnect' : 'unavailable',
+      };
     }
   });
   const entry = { at: Date.now(), byUid };
-  recentCache.set(room.id, entry);
+  trackCache.set(key, entry);
   return entry;
 }
 
@@ -135,7 +183,7 @@ apiRouter.post('/api/rooms/:id/join', requireAuth, (req, res) => {
     return res.status(404).json({ error: 'room_not_found', message: "This ronda doesn't exist." });
   }
   store.joinRoom(room.id, req.user.uid);
-  recentCache.delete(room.id);
+  clearRoomCache(room.id);
   res.json({ room: presentRoom(room, req.user.uid) });
 });
 
@@ -152,12 +200,13 @@ function requireMembership(req, res) {
   return room;
 }
 
-// Per-member preview of everyone's latest listens.
-apiRouter.get('/api/rooms/:id/recent', requireAuth, async (req, res, next) => {
+// Per-member preview of whatever source the room is currently looking at.
+apiRouter.get('/api/rooms/:id/tracks', requireAuth, async (req, res, next) => {
   try {
     const room = requireMembership(req, res);
     if (!room) return;
-    const entry = await fetchRecentForRoom(room, { fresh: 'fresh' in req.query });
+    const source = sourceFrom(req.query.source);
+    const entry = await fetchTracksForRoom(room, source, { fresh: 'fresh' in req.query });
     const members = room.memberUids
       .map(store.getUser)
       .filter(Boolean)
@@ -166,11 +215,11 @@ apiRouter.get('/api/rooms/:id/recent', requireAuth, async (req, res, next) => {
         return {
           member: presentMember(member, req.user.uid),
           tracks: data.tracks.slice(0, 5),
-          totalRecent: data.tracks.length,
+          totalTracks: data.tracks.length,
           error: data.error,
         };
       });
-    res.json({ members, fetchedAt: entry.at });
+    res.json({ source, members, fetchedAt: entry.at });
   } catch (err) {
     next(err);
   }
@@ -187,24 +236,39 @@ apiRouter.post('/api/rooms/:id/playlist', requireAuth, async (req, res, next) =>
     const limit = Number.isFinite(limitRaw) ? Math.min(100, Math.max(5, Math.floor(limitRaw))) : 50;
     const customName = typeof req.body?.name === 'string' ? req.body.name.trim().slice(0, 100) : '';
 
-    const entry = await fetchRecentForRoom(room, { fresh: true });
+    const source = sourceFrom(req.body?.source);
+    const entry = await fetchTracksForRoom(room, source, { fresh: true });
     const members = room.memberUids.map(store.getUser).filter(Boolean);
     const contributing = [];
     const skipped = [];
+    let anyNeedsReconnect = false;
     for (const member of members) {
       const data = entry.byUid[member.uid];
       if (data?.tracks?.length) contributing.push({ member, tracks: data.tracks });
-      else skipped.push(member.displayName);
+      else {
+        skipped.push(member.displayName);
+        if (data?.error === 'needs_reconnect') anyNeedsReconnect = true;
+      }
     }
     if (!contributing.length) {
-      return res.status(409).json({
-        error: 'no_tracks',
-        message:
-          "Nobody's listening history could be read. Play some music on Spotify (or reconnect) and try again.",
-      });
+      // Switching sources can outrun the permissions people granted earlier,
+      // so point at the fix rather than at Spotify.
+      return res.status(409).json(
+        anyNeedsReconnect
+          ? {
+              error: 'needs_reconnect',
+              message:
+                'Ronda needs permission to read your top tracks. Everyone in this ronda has to log in again once — then blend away.',
+            }
+          : {
+              error: 'no_tracks',
+              message:
+                "Nobody's listening history could be read. Play some music on Spotify (or reconnect) and try again.",
+            }
+      );
     }
 
-    const blended = blendRecent(
+    const blended = blendTracks(
       contributing.map(({ member, tracks }) => tracks.map((t) => ({ ...t, uid: member.uid }))),
       { limit }
     );
@@ -212,7 +276,7 @@ apiRouter.post('/api/rooms/:id/playlist', requireAuth, async (req, res, next) =>
     const dateLabel = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
     const name = customName || `${room.name} · ${dateLabel}`;
     const contributors = contributing.map(({ member }) => member.displayName).join(', ');
-    const description = `The latest listens of ${contributors}. Blended with Ronda.`.slice(0, 250);
+    const description = SOURCES[source].describe(contributors).slice(0, 250);
 
     const playlist = await createPlaylist(req.user, { name, description, isPublic: false });
     await addTracksToPlaylist(req.user, playlist.id, blended.map((t) => t.uri));
@@ -228,6 +292,7 @@ apiRouter.post('/api/rooms/:id/playlist', requireAuth, async (req, res, next) =>
       trackCount: blended.length,
       createdAt: new Date().toISOString(),
       createdByUid: req.user.uid,
+      source,
       contributions,
       skippedMembers: skipped,
     };

@@ -1,5 +1,24 @@
-// Room ("ronda") page: members, their latest listens, and the blend button.
+// Room ("ronda") page: members, what they're playing, and the blend button.
 import { api, el, timeAgo, toast, renderHeader, avatar } from './common.js';
+
+// Keep these keys in sync with SOURCES in server/routes/api.js.
+const SOURCES = {
+  top: {
+    label: 'On repeat lately',
+    blurb:
+      'Interleaves the tracks everyone has played most over the last few weeks — ' +
+      'top picks first, no repeats — and saves the playlist to your Spotify account.',
+    empty: 'No top tracks yet — Spotify needs a few weeks of listening to rank them.',
+  },
+  recent: {
+    label: 'Latest listens',
+    blurb:
+      "Interleaves everyone's most recent tracks — newest first, no repeats — " +
+      'and saves the playlist to your Spotify account.',
+    empty: 'No recent listens found — time to play something!',
+  },
+};
+const DEFAULT_SOURCE = 'top';
 
 const roomId = decodeURIComponent(location.pathname.split('/')[2] || '');
 const loginJoinHref = `/auth/login?join=${encodeURIComponent(roomId)}`;
@@ -7,6 +26,7 @@ const $ = (id) => document.getElementById(id);
 
 let me = null;
 let room = null;
+let source = DEFAULT_SOURCE;
 
 async function main() {
   try {
@@ -27,7 +47,10 @@ async function main() {
   document.title = `${room.name} · Ronda`;
   $('loading').hidden = true;
   render();
-  if (room.isMember) refreshRecent(false);
+  if (room.isMember) {
+    if (me?.user?.needsReconnect) showReconnect();
+    refreshTracks(false);
+  }
 }
 
 function renderMissing(err) {
@@ -78,18 +101,39 @@ function render() {
     return;
   }
 
-  // --- Members & their latest listens ---
+  root.append(el('div', { id: 'reconnect-notice' }));
+
+  // --- What everyone's playing, from the selected source ---
+  const sourceSelect = el(
+    'select',
+    { id: 'source-select', 'aria-label': 'What to blend' },
+    Object.entries(SOURCES).map(([key, meta]) =>
+      el('option', { value: key, text: meta.label, selected: key === source })
+    )
+  );
+  sourceSelect.addEventListener('change', () => {
+    source = sourceSelect.value;
+    applySource();
+    renderMemberSkeletons();
+    refreshTracks(false);
+  });
+
   root.append(
     el(
       'div',
       { class: 'section-head' },
-      el('h2', { text: 'Latest listens' }),
-      el('button', {
-        id: 'refresh-btn',
-        class: 'btn btn-ghost btn-sm',
-        text: 'Refresh',
-        onclick: () => refreshRecent(true),
-      })
+      el('h2', { id: 'source-heading', text: SOURCES[source].label }),
+      el(
+        'div',
+        { class: 'section-actions' },
+        sourceSelect,
+        el('button', {
+          id: 'refresh-btn',
+          class: 'btn btn-ghost btn-sm',
+          text: 'Refresh',
+          onclick: () => refreshTracks(true),
+        })
+      )
     ),
     el('div', { id: 'members-grid', class: 'members-grid' })
   );
@@ -116,10 +160,7 @@ function render() {
       'section',
       { class: 'panel' },
       el('h2', { text: 'Blend a playlist' }),
-      el('p', {
-        class: 'panel-sub',
-        text: "Interleaves everyone's most recent tracks — newest first, no repeats — and saves the playlist to your Spotify account.",
-      }),
+      el('p', { id: 'gen-blurb', class: 'panel-sub', text: SOURCES[source].blurb }),
       genForm,
       el('div', { id: 'gen-result' })
     )
@@ -139,8 +180,8 @@ function renderJoinPanel(root) {
     el('h2', { text: `Join “${room.name}”` }),
     el('p', {
       text:
-        'Connect your Spotify account so your latest listens go into the blend. ' +
-        'Ronda only reads your recently played tracks.',
+        'Connect your Spotify account so your listening goes into the blend. ' +
+        'Ronda only reads your recently played and most-played tracks.',
     })
   );
   if (!me) {
@@ -155,7 +196,7 @@ function renderJoinPanel(root) {
           try {
             ({ room } = await api(`/api/rooms/${encodeURIComponent(roomId)}/join`, { method: 'POST' }));
             render();
-            refreshRecent(false);
+            refreshTracks(false);
             toast(`You're in — welcome to ${room.name}!`, 'success');
           } catch (err) {
             toast(err.message, 'error');
@@ -206,8 +247,8 @@ function memberCard(member, tracks, note) {
       el('div', {
         class: 'member-empty',
         text: member.needsReconnect
-          ? 'Their Spotify connection expired — ask them to log in to Ronda again.'
-          : 'No recent listens found — time to play something!',
+          ? 'Their Spotify connection needs a refresh — ask them to log in to Ronda again.'
+          : SOURCES[source].empty,
       })
     );
     return card;
@@ -229,7 +270,10 @@ function memberCard(member, tracks, note) {
             el('div', { class: 't-name', text: track.name, title: track.name }),
             el('div', { class: 't-artist', text: track.artists, title: track.artists })
           ),
-          el('span', { class: 't-when', text: timeAgo(track.playedAt) })
+          el('span', {
+            class: 't-when',
+            text: track.rank ? `#${track.rank}` : timeAgo(track.playedAt),
+          })
         )
       )
     )
@@ -237,29 +281,46 @@ function memberCard(member, tracks, note) {
   return card;
 }
 
-async function refreshRecent(fresh) {
+/** Reflects the selected source in the heading and the blend panel's copy. */
+function applySource() {
+  const heading = $('source-heading');
+  if (heading) heading.textContent = SOURCES[source].label;
+  const blurb = $('gen-blurb');
+  if (blurb) blurb.textContent = SOURCES[source].blurb;
+}
+
+async function refreshTracks(fresh) {
+  const requested = source;
   const button = $('refresh-btn');
   if (button) {
     button.disabled = true;
     button.textContent = 'Refreshing…';
   }
   try {
+    const query = new URLSearchParams({ source: requested });
+    if (fresh) query.set('fresh', '1');
     const { members } = await api(
-      `/api/rooms/${encodeURIComponent(roomId)}/recent${fresh ? '?fresh=1' : ''}`
+      `/api/rooms/${encodeURIComponent(roomId)}/tracks?${query}`
     );
+    if (requested !== source) return; // the picker moved on while we were waiting
     const grid = $('members-grid');
     grid.textContent = '';
+    let needsReconnect = false;
     for (const entry of members) {
+      if (entry.error === 'needs_reconnect') needsReconnect = true;
       grid.append(
         entry.error
           ? memberCard(
               entry.member,
               null,
-              "Couldn't read their listens right now — they may need to reconnect."
+              entry.error === 'needs_reconnect'
+                ? "Hasn't given Ronda permission to read this yet — they need to log in again."
+                : "Couldn't read their listens right now — they may need to reconnect."
             )
           : memberCard(entry.member, entry.tracks, null)
       );
     }
+    if (needsReconnect) showReconnect();
   } catch (err) {
     toast(err.message, 'error');
   } finally {
@@ -268,6 +329,24 @@ async function refreshRecent(fresh) {
       button.textContent = 'Refresh';
     }
   }
+}
+
+/** Reading top tracks needs a permission older logins never granted. */
+function showReconnect() {
+  const host = $('reconnect-notice');
+  if (!host || host.childElementCount) return;
+  host.append(
+    el(
+      'div',
+      { class: 'notice' },
+      el('div', {}, 'Ronda now needs permission to read most-played tracks. Log in again once to grant it.'),
+      el('a', {
+        class: 'btn btn-spotify btn-sm',
+        href: `/auth/login?next=${encodeURIComponent(`/r/${roomId}`)}`,
+        text: 'Reconnect Spotify',
+      })
+    )
+  );
 }
 
 async function onGenerate(event) {
@@ -279,6 +358,7 @@ async function onGenerate(event) {
     const { playlist } = await api(`/api/rooms/${encodeURIComponent(roomId)}/playlist`, {
       method: 'POST',
       body: {
+        source,
         limit: Number($('gen-limit').value),
         name: $('gen-name').value.trim() || undefined,
       },
@@ -289,6 +369,7 @@ async function onGenerate(event) {
     toast('Playlist created on your Spotify 🎉', 'success');
   } catch (err) {
     toast(err.message, 'error');
+    if (err.code === 'needs_reconnect') showReconnect();
   } finally {
     button.disabled = false;
     button.textContent = 'Blend on Spotify';
@@ -348,7 +429,9 @@ function renderHistory() {
           el('div', { class: 'p-name', text: playlist.name }),
           el('div', {
             class: 'p-meta',
-            text: `${playlist.trackCount} tracks · by ${playlist.createdBy} · ${timeAgo(playlist.createdAt)}`,
+            text:
+              `${playlist.trackCount} tracks · ${SOURCES[playlist.source]?.label ?? 'Latest listens'}` +
+              ` · by ${playlist.createdBy} · ${timeAgo(playlist.createdAt)}`,
           })
         ),
         el('a', {

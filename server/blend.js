@@ -1,21 +1,24 @@
 /**
- * Blend several members' recently-played lists into one playlist.
+ * Blend several members' track lists into one playlist.
  *
- * Strategy: round-robin. Take each member's most recent track in turn, skip
+ * Strategy: round-robin. Take each member's top-of-list track in turn, skip
  * anything already picked (within a member's own list or by another member),
  * and stop at `limit`. This keeps the result fair — everyone contributes
- * roughly equally — and fresh, since each member's newest listens go first.
+ * roughly equally — and front-loads whatever each list ranks highest.
+ *
+ * The lists' ordering carries the meaning, so this works for any source:
+ * newest-first for recent plays, most-played-first for top tracks.
  *
  * @param {Array<Array<{uri: string}>>} memberLists
- *   One array per member, each sorted most-recent-first. Items only need a
+ *   One array per member, each already sorted best-first. Items only need a
  *   `uri`; any extra fields are carried through untouched.
  * @param {{limit?: number}} [opts]
  * @returns {Array<object>} interleaved, deduplicated tracks (≤ limit)
  */
-export function blendRecent(memberLists, opts = {}) {
+export function blendTracks(memberLists, opts = {}) {
   const limit = Math.max(1, opts.limit ?? 50);
 
-  // Dedupe within each member's list first (repeat plays keep the most recent).
+  // Dedupe within each member's list first (repeats keep their best position).
   const queues = memberLists.map((list) => {
     const seen = new Set();
     const queue = [];

@@ -6,12 +6,23 @@ import * as store from './store.js';
 const ACCOUNTS_BASE = 'https://accounts.spotify.com';
 const API_BASE = 'https://api.spotify.com/v1';
 
-// Minimal scopes: read each member's listening history, create playlists.
+// Minimal scopes: read each member's listening history and their most-played
+// tracks, and create playlists.
 export const SCOPES = [
   'user-read-recently-played',
+  'user-top-read',
   'playlist-modify-public',
   'playlist-modify-private',
 ];
+
+/**
+ * Spotify's answer when a token was minted before we started asking for a
+ * scope. Refreshing can't widen a token, so the user has to authorize again.
+ */
+export const isMissingScope = (err) =>
+  err instanceof SpotifyError &&
+  err.status === 403 &&
+  /insufficient.*scope/i.test(err.message ?? '');
 
 export class SpotifyError extends Error {
   constructor(message, status, body) {
@@ -113,6 +124,15 @@ async function rawApi(accessToken, method, path, body) {
 }
 
 async function api(user, method, path, body) {
+  try {
+    return await callApi(user, method, path, body);
+  } catch (err) {
+    if (isMissingScope(err)) store.setNeedsReconnect(user.uid, true);
+    throw err;
+  }
+}
+
+async function callApi(user, method, path, body) {
   const attempt = async () => rawApi(await freshAccessToken(user), method, path, body);
   try {
     return await attempt();
@@ -139,21 +159,51 @@ function pickImage(images) {
   return (images[1] ?? images[0]).url;
 }
 
+/** Playable tracks only — skips podcast episodes and local files, which have no shareable URI. */
+function mapTrack(track) {
+  if (!track || track.type !== 'track' || track.is_local || !track.uri) return null;
+  return {
+    uri: track.uri,
+    id: track.id,
+    name: track.name,
+    artists: (track.artists ?? []).map((a) => a.name).join(', '),
+    image: pickImage(track.album?.images),
+  };
+}
+
 /** Most recent plays for a user, newest first, deduplicated by the API's order. */
 export async function getRecentlyPlayed(user, limit = 50) {
   const data = await api(user, 'GET', `/me/player/recently-played?limit=${Math.min(limit, 50)}`);
   const items = [];
   for (const it of data?.items ?? []) {
-    const track = it?.track;
-    if (!track || track.type !== 'track' || track.is_local || !track.uri) continue;
-    items.push({
-      uri: track.uri,
-      id: track.id,
-      name: track.name,
-      artists: (track.artists ?? []).map((a) => a.name).join(', '),
-      image: pickImage(track.album?.images),
-      playedAt: it.played_at,
-    });
+    const track = mapTrack(it?.track);
+    if (track) items.push({ ...track, playedAt: it.played_at });
+  }
+  return items;
+}
+
+const TOP_PAGE_SIZE = 50; // the endpoint's per-request maximum
+
+/**
+ * A user's most-played tracks, ranked highest-first. `timeRange` is Spotify's
+ * own window: short_term ≈ last 4 weeks, medium_term ≈ 6 months, long_term ≈ years.
+ * Needs the `user-top-read` scope.
+ */
+export async function getTopTracks(user, limit = 50, timeRange = 'short_term') {
+  const items = [];
+  for (let offset = 0; items.length < limit; offset += TOP_PAGE_SIZE) {
+    const page = Math.min(TOP_PAGE_SIZE, limit - items.length);
+    const data = await api(
+      user,
+      'GET',
+      `/me/top/tracks?time_range=${timeRange}&limit=${page}&offset=${offset}`
+    );
+    const batch = data?.items ?? [];
+    for (const raw of batch) {
+      const track = mapTrack(raw);
+      if (track) items.push({ ...track, rank: items.length + 1 });
+    }
+    if (batch.length < page) break; // the user has no more ranked tracks
   }
   return items;
 }

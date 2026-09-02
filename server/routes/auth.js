@@ -12,6 +12,7 @@ import {
 } from '../session.js';
 import { authorizeUrl, exchangeCode, getProfile } from '../spotify.js';
 import * as store from '../store.js';
+import { clearCachesForUser } from './api.js';
 
 const OAUTH_COOKIE = 'ronda_oauth';
 const STATE_MAX_AGE_MS = 10 * 60 * 1000;
@@ -74,6 +75,7 @@ authRouter.get('/auth/callback', async (req, res) => {
       avatarUrl: profile.images?.[0]?.url ?? null,
       tokens,
     });
+    clearCachesForUser(user.uid);
     writeSession(req, res, { uid: user.uid, iat: Date.now() });
 
     let dest = statePayload.next || '/';
