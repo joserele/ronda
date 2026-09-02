@@ -405,9 +405,18 @@ function blendForm() {
 
 function blendCard(blend) {
   const label = SOURCES[blend.source]?.label ?? 'Latest listens';
+  // Names get long, and two of them plus a relative time overflows the line.
+  // The line stays short; the tooltip carries who, plus the exact times that
+  // "13m ago" throws away.
   const freshness = blend.refreshedAt
-    ? `refreshed ${timeAgo(blend.refreshedAt)}${blend.refreshedBy ? ` by ${blend.refreshedBy}` : ''}`
-    : `blended ${timeAgo(blend.createdAt)} by ${blend.createdBy}`;
+    ? `refreshed ${timeAgo(blend.refreshedAt)}`
+    : `blended ${timeAgo(blend.createdAt)}`;
+  const when = (iso) => new Date(iso).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+  const credit =
+    `Blended by ${blend.createdBy} · ${when(blend.createdAt)}` +
+    (blend.refreshedAt
+      ? `\nLast refreshed by ${blend.refreshedBy ?? 'someone'} · ${when(blend.refreshedAt)}`
+      : '');
 
   const box = el(
     'div',
@@ -418,7 +427,11 @@ function blendCard(blend) {
       text: 'One playlist that everyone keeps current — refreshing replaces its tracks instead of making another.',
     }),
     el('div', { class: 'blend-name', text: blend.name }),
-    el('div', { class: 'muted blend-meta', text: `${blend.trackCount} tracks · ${label} · ${freshness}` }),
+    el('div', {
+      class: 'muted blend-meta',
+      title: credit,
+      text: `${blend.trackCount} tracks · ${label} · ${freshness}`,
+    }),
     el(
       'div',
       { class: 'chips' },
