@@ -7,7 +7,9 @@ import {
   getTopTracks,
   createPlaylist,
   addTracksToPlaylist,
+  replacePlaylistTracks,
   isMissingScope,
+  SpotifyError,
 } from '../spotify.js';
 import { blendTracks } from '../blend.js';
 
@@ -51,6 +53,9 @@ function presentPlaylist(playlist, viewerUid, room) {
     // Blends made before the source picker existed were all recently-played.
     source: playlist.source ?? 'recent',
     createdBy: nameOf(playlist.createdByUid),
+    refreshedAt: playlist.refreshedAt ?? null,
+    // Refreshing writes to the creator's Spotify library, so only they can.
+    canRefresh: Boolean(viewerUid && viewerUid === playlist.createdByUid),
     // You can forget your own blends; whoever started the ronda can tidy up any.
     canDelete: Boolean(
       viewerUid && (viewerUid === playlist.createdByUid || viewerUid === room?.ownerUid)
@@ -242,62 +247,85 @@ apiRouter.get('/api/rooms/:id/tracks', requireAuth, async (req, res, next) => {
 
 // The main event: blend everyone's latest listens into a playlist
 // on the requesting member's Spotify account.
+const clampLimit = (value, fallback = 50) => {
+  const n = Number(value);
+  return Number.isFinite(n) ? Math.min(100, Math.max(5, Math.floor(n))) : fallback;
+};
+
+/**
+ * Pulls everyone's tracks fresh and interleaves them. Shared by creating a
+ * blend and refreshing one, so a refresh produces exactly what a new blend
+ * would have — only the destination differs.
+ *
+ * @returns {{blended: object[], contributors: string, contributions: object,
+ *            skipped: string[]}|{failure: object}} `failure` is a ready-to-send body
+ */
+async function buildBlend(room, source, limit) {
+  const entry = await fetchTracksForRoom(room, source, { fresh: true });
+  const members = room.memberUids.map(store.getUser).filter(Boolean);
+  const contributing = [];
+  const skipped = [];
+  let anyNeedsReconnect = false;
+  for (const member of members) {
+    const data = entry.byUid[member.uid];
+    if (data?.tracks?.length) contributing.push({ member, tracks: data.tracks });
+    else {
+      skipped.push(member.displayName);
+      if (data?.error === 'needs_reconnect') anyNeedsReconnect = true;
+    }
+  }
+  if (!contributing.length) {
+    // Switching sources can outrun the permissions people granted earlier,
+    // so point at the fix rather than at Spotify.
+    return {
+      failure: anyNeedsReconnect
+        ? {
+            error: 'needs_reconnect',
+            message:
+              'Ronda needs permission to read your top tracks. Everyone in this ronda has to log in again once — then blend away.',
+          }
+        : {
+            error: 'no_tracks',
+            message:
+              "Nobody's listening history could be read. Play some music on Spotify (or reconnect) and try again.",
+          },
+    };
+  }
+
+  const blended = blendTracks(
+    contributing.map(({ member, tracks }) => tracks.map((t) => ({ ...t, uid: member.uid }))),
+    { limit }
+  );
+  const contributions = {};
+  for (const track of blended) contributions[track.uid] = (contributions[track.uid] ?? 0) + 1;
+
+  return {
+    blended,
+    contributions,
+    skipped,
+    contributors: contributing.map(({ member }) => member.displayName).join(', '),
+  };
+}
+
 apiRouter.post('/api/rooms/:id/playlist', requireAuth, async (req, res, next) => {
   try {
     const room = requireMembership(req, res);
     if (!room) return;
 
-    const limitRaw = Number(req.body?.limit);
-    const limit = Number.isFinite(limitRaw) ? Math.min(100, Math.max(5, Math.floor(limitRaw))) : 50;
+    const limit = clampLimit(req.body?.limit);
     const customName = typeof req.body?.name === 'string' ? req.body.name.trim().slice(0, 100) : '';
-
     const source = sourceFrom(req.body?.source);
-    const entry = await fetchTracksForRoom(room, source, { fresh: true });
-    const members = room.memberUids.map(store.getUser).filter(Boolean);
-    const contributing = [];
-    const skipped = [];
-    let anyNeedsReconnect = false;
-    for (const member of members) {
-      const data = entry.byUid[member.uid];
-      if (data?.tracks?.length) contributing.push({ member, tracks: data.tracks });
-      else {
-        skipped.push(member.displayName);
-        if (data?.error === 'needs_reconnect') anyNeedsReconnect = true;
-      }
-    }
-    if (!contributing.length) {
-      // Switching sources can outrun the permissions people granted earlier,
-      // so point at the fix rather than at Spotify.
-      return res.status(409).json(
-        anyNeedsReconnect
-          ? {
-              error: 'needs_reconnect',
-              message:
-                'Ronda needs permission to read your top tracks. Everyone in this ronda has to log in again once — then blend away.',
-            }
-          : {
-              error: 'no_tracks',
-              message:
-                "Nobody's listening history could be read. Play some music on Spotify (or reconnect) and try again.",
-            }
-      );
-    }
 
-    const blended = blendTracks(
-      contributing.map(({ member, tracks }) => tracks.map((t) => ({ ...t, uid: member.uid }))),
-      { limit }
-    );
+    const built = await buildBlend(room, source, limit);
+    if (built.failure) return res.status(409).json(built.failure);
+    const { blended, contributions, skipped, contributors } = built;
 
     const dateLabel = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
     const name = customName || `${room.name} · ${dateLabel}`;
-    const contributors = contributing.map(({ member }) => member.displayName).join(', ');
     const description = SOURCES[source].describe(contributors).slice(0, 250);
 
     const playlist = await createPlaylist(req.user, { name, description, isPublic: false });
     await addTracksToPlaylist(req.user, playlist.id, blended.map((t) => t.uri));
-
-    const contributions = {};
-    for (const track of blended) contributions[track.uid] = (contributions[track.uid] ?? 0) + 1;
 
     const record = {
       id: crypto.randomUUID(),
@@ -305,6 +333,7 @@ apiRouter.post('/api/rooms/:id/playlist', requireAuth, async (req, res, next) =>
       name,
       url: playlist.external_urls?.spotify ?? `https://open.spotify.com/playlist/${playlist.id}`,
       trackCount: blended.length,
+      limit,
       createdAt: new Date().toISOString(),
       createdByUid: req.user.uid,
       source,
@@ -395,6 +424,58 @@ apiRouter.delete('/api/rooms/:id', requireAuth, (req, res) => {
   store.deleteRoom(room.id);
   clearRoomCache(room.id);
   res.status(204).end();
+});
+
+// Re-blend into an existing playlist instead of making another one: same
+// playlist id, URL and followers, new contents. Only the creator can, because
+// the playlist sits in their library and it's their token that rewrites it.
+apiRouter.post('/api/rooms/:id/playlists/:playlistId/refresh', requireAuth, async (req, res, next) => {
+  try {
+    const room = requireMembership(req, res);
+    if (!room) return;
+
+    const record = room.playlists.find((p) => p.id === req.params.playlistId);
+    if (!record) {
+      return res.status(404).json({ error: 'playlist_not_found', message: 'That blend is gone.' });
+    }
+    if (record.createdByUid !== req.user.uid) {
+      return res.status(403).json({
+        error: 'not_yours',
+        message:
+          "This playlist lives in someone else's Spotify library — only they can refresh it.",
+      });
+    }
+
+    const source = sourceFrom(record.source);
+    const built = await buildBlend(room, source, clampLimit(record.limit ?? record.trackCount));
+    if (built.failure) return res.status(409).json(built.failure);
+    const { blended, contributions, skipped, contributors } = built;
+
+    try {
+      await replacePlaylistTracks(req.user, record.spotifyId, blended.map((t) => t.uri));
+    } catch (err) {
+      // Deleting the playlist in Spotify leaves our record pointing at nothing.
+      if (err instanceof SpotifyError && err.status === 404) {
+        return res.status(409).json({
+          error: 'playlist_gone',
+          message:
+            "That playlist no longer exists on Spotify — blend a new one, and delete this row when you're ready.",
+        });
+      }
+      throw err;
+    }
+
+    const updated = store.updatePlaylistInRoom(room.id, record.id, {
+      trackCount: blended.length,
+      contributions,
+      skippedMembers: skipped,
+      refreshedAt: new Date().toISOString(),
+      contributors,
+    });
+    res.json({ playlist: presentPlaylist(updated, req.user.uid, room) });
+  } catch (err) {
+    next(err);
+  }
 });
 
 // Forget a blend. Ronda only drops its own record — the playlist stays in the

@@ -187,6 +187,17 @@ export function addPlaylistToRoom(roomId, playlist) {
   scheduleSave();
 }
 
+/** Applies a patch to one blend's record — used when a blend is refreshed in place. */
+export function updatePlaylistInRoom(roomId, playlistId, patch) {
+  const room = state.rooms[roomId];
+  if (!room) return null;
+  const playlist = room.playlists.find((p) => p.id === playlistId);
+  if (!playlist) return null;
+  Object.assign(playlist, patch);
+  scheduleSave();
+  return playlist;
+}
+
 /**
  * Forgets a blend. Only Ronda's own record goes — the playlist itself stays in
  * whoever created it's Spotify library.

@@ -227,3 +227,16 @@ export async function addTracksToPlaylist(user, playlistId, uris) {
     });
   }
 }
+
+/**
+ * Swaps a playlist's contents for `uris`, keeping the playlist itself — same
+ * id, same URL, same followers. PUT replaces with up to 100 URIs (and empties
+ * the playlist when given none); the rest are appended after.
+ */
+export async function replacePlaylistTracks(user, playlistId, uris) {
+  const path = `/playlists/${encodeURIComponent(playlistId)}/items`;
+  await api(user, 'PUT', path, { uris: uris.slice(0, 100) });
+  for (let i = 100; i < uris.length; i += 100) {
+    await api(user, 'POST', path, { uris: uris.slice(i, i + 100) });
+  }
+}

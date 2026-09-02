@@ -140,7 +140,7 @@ function render() {
         el('button', {
           id: 'refresh-btn',
           class: 'btn btn-ghost btn-sm',
-          text: 'Refresh',
+          text: 'Refresh listens',
           onclick: () => refreshTracks(true),
         })
       )
@@ -377,7 +377,7 @@ async function refreshTracks(fresh) {
   } finally {
     if (button) {
       button.disabled = false;
-      button.textContent = 'Refresh';
+      button.textContent = 'Refresh listens';
     }
   }
 }
@@ -491,7 +491,10 @@ function renderHistory() {
             class: 'p-meta',
             text:
               `${playlist.trackCount} tracks · ${SOURCES[playlist.source]?.label ?? 'Latest listens'}` +
-              ` · by ${playlist.createdBy} · ${timeAgo(playlist.createdAt)}`,
+              ` · by ${playlist.createdBy} · ` +
+              (playlist.refreshedAt
+                ? `refreshed ${timeAgo(playlist.refreshedAt)}`
+                : timeAgo(playlist.createdAt)),
           })
         ),
         el(
@@ -504,6 +507,14 @@ function renderHistory() {
             rel: 'noopener',
             text: 'Open ↗',
           }),
+          playlist.canRefresh
+            ? el('button', {
+                class: 'btn btn-ghost btn-sm',
+                text: 'Refresh',
+                title: 'Re-blend into this same playlist',
+                onclick: (event) => onRefresh(playlist, event.target),
+              })
+            : null,
           playlist.canDelete
             ? el('button', {
                 class: 'btn btn-ghost btn-sm btn-danger-ghost',
@@ -618,6 +629,37 @@ async function onDeleteRoom() {
     location.href = `/?deleted=${encodeURIComponent(room.name)}`;
   } catch (err) {
     toast(err.message, 'error');
+  }
+}
+
+async function onRefresh(playlist, button) {
+  const confirmed = await confirmDialog({
+    title: `Refresh “${playlist.name}”?`,
+    body:
+      "This re-blends everyone's current listening into this same playlist, replacing the " +
+      'tracks it holds now. The playlist keeps its link, so nothing new lands in your library.',
+    note:
+      'Anything you added or reordered inside Spotify is replaced too. To keep this one as it ' +
+      'is, blend a new playlist instead.',
+    confirmText: 'Refresh playlist',
+    danger: false,
+  });
+  if (!confirmed) return;
+
+  button.disabled = true;
+  button.textContent = 'Refreshing…';
+  try {
+    const { playlist: updated } = await api(
+      `/api/rooms/${encodeURIComponent(roomId)}/playlists/${encodeURIComponent(playlist.id)}/refresh`,
+      { method: 'POST' }
+    );
+    room.playlists = (room.playlists ?? []).map((p) => (p.id === updated.id ? updated : p));
+    renderHistory();
+    toast(`“${updated.name}” now holds ${updated.trackCount} fresh tracks.`, 'success');
+  } catch (err) {
+    toast(err.message, 'error');
+    button.disabled = false;
+    button.textContent = 'Refresh';
   }
 }
 
